@@ -10,17 +10,17 @@
     * **private->public:** an agent generates the PR description based on the public diff only (no access to private PR description, to avoid leaking internal information).
     * **public->private:** keep the same PR title and description from the public repo.  add a header: "Synced from \<public repo name\>: \<URL to public repo PR\>".  the squash commit title should match the original public PR title.
 
-## deferred to tech design
+## deferred to tech design (now addressed)
 
-these are real questions, but they fit better in the technical design than in the PRD:
+all items below have been addressed in TECH-DESIGN.md:
 
-* which specific local oz agent flow writes private->public PR descriptions? should it be the same agent flow used for conflict resolution, or a separate one?
-* what is the configuration surface for the conflict resolution timeout, and what should the default be?
-* what are the exact constraints on marker placement? for example: must markers appear on their own line, or can they appear at the end of a code line or inside a larger comment?
-* which file types and comment syntaxes are supported for markers, and how is file language determined?
-* how should "completely empty after stripping" be defined? does whitespace-only count as empty?
-* should the CI validation action also validate that markers use the correct comment syntax for the file type?
-* what are the exact interfaces for the reusable workflows, stripping tool, and stack management tool?
-* what are the exact GitHub permissions, tokens, and repo settings required for consuming repos?
+* ~~which specific local oz agent flow writes private->public PR descriptions?~~ -- separate skill (`pr-description`), distinct from conflict resolution
+* ~~what is the configuration surface for the conflict resolution timeout?~~ -- `escalate_after` workflow input + `Repo-Sync-Assigned` trailer + cron workflow
+* ~~what are the exact constraints on marker placement?~~ -- no constraints; simple substring match, developers trusted to use sensibly
+* ~~which file types and comment syntaxes are supported for markers?~~ -- all text files scanned; binary detection via null-byte heuristic
+* ~~how should "completely empty after stripping" be defined?~~ -- not further defined; empty files are kept as-is per PRD
+* ~~should the CI validation action also validate comment syntax?~~ -- no; markers are language-agnostic substring matches
+* ~~what are the exact interfaces for the reusable workflows?~~ -- three workflows documented with full input/secret specs
+* ~~what are the exact GitHub permissions, tokens, and repo settings?~~ -- GitHub App with `contents:write`, `pull_requests:write`, `metadata:read`
 
 ## open

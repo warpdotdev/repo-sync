@@ -34,22 +34,28 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
    a. generate a clean snapshot of the private repo at that commit (strip `private/` dirs and `!repo-sync: private-start`/`!repo-sync: private-end` regions)
    b. diff the clean snapshot against the previous clean snapshot (or the public repo's current `main` if this is the first unsynced commit)
    c. if the diff is empty, skip (all changes in this commit were internal-only)
-   d. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   e. apply the diff and commit
-   f. create a PR with the base set to the previous sync branch (or `main`)
+   d. check if a branch `repo-sync/private-to-public/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run)
+   e. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
+   f. replace the working tree with the clean snapshot contents (full tree replacement, not patch-based -- handles renames, deletions, permission changes, and binary files correctly)
+   g. commit with a generic message (e.g., `"repo-sync: sync from private"`).  **do not** use the source commit's message, as it could leak private information
+   h. create a PR with the base set to the previous sync branch (or `main`)
+   i. if this PR is the bottom of the stack (base = `main`), enable GitHub auto-merge (auto-merge waits for required status checks to pass before merging).  do **not** enable auto-merge on PRs deeper in the stack -- they should only auto-merge after being restacked to the bottom
 
 **public-to-private:**
 1. identify unsynced commits on the public repo's default branch
 2. for each unsynced commit (in chronological order):
-   a. create a branch `repo-sync/public-to-private/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   b. cherry-pick the commit, preserving author and message
-   c. create a PR with the base set to the previous sync branch (or `main`)
+   a. check if a branch `repo-sync/public-to-private/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard)
+   b. create a branch `repo-sync/public-to-private/<short-sha>` based on the top of the current stack (or `main` if no stack)
+   c. cherry-pick the commit, preserving author and message
+   d. if the cherry-pick has conflicts, handle them using the same conflict resolution flow as restacking (invoke agent, assign to human on failure)
+   e. create a PR with the base set to the previous sync branch (or `main`)
+   f. if this PR is the bottom of the stack (base = `main`), enable GitHub auto-merge.  do **not** enable auto-merge on PRs deeper in the stack
 
 ### merge strategy
 
 sync PRs are merged using **squash and merge**.  this ensures each source commit produces exactly one commit in the target repo.  the squash commit message must include the full PR title and description body, so that the `Repo-Sync-Origin` trailer (included in the PR description) survives into the merged commit on the default branch.  consuming repos should configure their squash merge settings to preserve the PR body in the commit message.
 
-this has an important interaction with restacking: when a sync PR is squash-merged, the resulting commit on `main` is a new commit object — it is not the same as the commits on the PR's branch.  a naive `git rebase main` on the next PR in the stack would fail to recognize that the squashed changes are already in `main`, causing duplicate-change conflicts.
+this has an important interaction with restacking: when a sync PR is squash-merged, the resulting commit on `main` is a new commit object -- it is not the same as the commits on the PR's branch.  a naive `git rebase main` on the next PR in the stack would fail to recognize that the squashed changes are already in `main`, causing duplicate-change conflicts.
 
 the fix is to use `git rebase --onto` when restacking:
 ```
@@ -64,8 +70,9 @@ when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event 
 2. identifies the next PR in the stack
 3. rebases its branch onto the updated `main` using `git rebase --onto` (see merge strategy above)
 4. updates the PR's base branch to `main` (or the new bottom of the stack)
-5. if the rebase succeeds cleanly, attempts to merge automatically
-6. if the rebase has conflicts, invokes the conflict resolution agent
+5. if the rebase succeeds cleanly, enables GitHub auto-merge (waits for CI to pass, then merges automatically)
+6. if CI fails after a clean rebase, assigns the PR to a human reviewer (same assignment logic as conflict resolution, but without invoking the agent)
+7. if the rebase has conflicts, invokes the conflict resolution agent
 
 the merged sync branch can be safely deleted after the watermark is updated (GitHub's auto-delete-on-merge is compatible with this approach).
 
@@ -75,11 +82,30 @@ the merged sync branch can be safely deleted after the watermark is updated (Git
 
 **public-to-private:** the PR title and description are copied from the source public PR.  a header is prepended to the description: "Synced from \<public repo name\>: \<URL to public repo PR\>".  the squash commit title matches the original public PR title.
 
+### trailer parsing
+
+PR descriptions may contain multiple trailers (e.g., `Repo-Sync-Origin`, `Repo-Sync-Assigned`).  since public-to-private sync copies the source PR description verbatim (which is untrusted input), the source description could contain spoofed `Repo-Sync-*` trailers.
+
+to handle this, all trailer parsing uses the **last occurrence** of each trailer type.  the workflow always appends its trailers to the end of the description, so the last occurrence is always the one the workflow wrote.  this avoids needing to sanitize or mutate the source description.
+
 ### conflict resolution assignment
 
-in both directions, the sync PR is assigned to the person who clicked merge on the source PR.  for public-to-private, this works because only people with private repo access have merge privileges on the public repo.  for direct pushes (no source PR), the commit author is assigned.  if neither can be determined, the fallback is `@oncall-client-primary`.
+in both directions, the sync PR has a **reviewer requested** from the person who clicked merge on the source PR.  for public-to-private, this works because only people with private repo access have merge privileges on the public repo.  for direct pushes (no source PR), the commit author is requested as reviewer.  if neither can be determined, the fallback is `@oncall-client-primary`.
 
-if the assignee doesn't respond within a configurable timeout, the PR is reassigned to `@oncall-client-primary`.  escalation implementation details TBD.
+if the reviewer doesn't respond within a configurable timeout, the PR is reassigned to the configured `escalate_to` team (defaults to `@oncall-client-primary`).
+
+note: GitHub PR "reviewer requests" support both individual users and teams, so `@oncall-client-primary` works as a team reviewer request.
+
+### escalation mechanism
+
+when a sync PR has a reviewer requested (either after agent conflict resolution or after agent failure), the workflow appends a `Repo-Sync-Assigned` trailer to the PR description:
+```
+Repo-Sync-Assigned: <github-username>@<ISO-8601-timestamp>
+```
+
+a separate **escalation cron workflow** (see reusable workflow interfaces) runs periodically (e.g., every 15 minutes) and checks all open sync PRs for this trailer.  if the elapsed time since the timestamp exceeds the configured `escalate_after` duration, a review is requested from the `escalate_to` team.
+
+the cron resolution means actual escalation may be up to one cron interval late (e.g., up to 15 minutes if the cron runs every 15 minutes).  this is acceptable for the initial implementation.
 
 ### infinite loop prevention
 
@@ -89,4 +115,215 @@ when a sync commit merges into the target repo's default branch, it would normal
 2. **PR branch verification:** when the workflow sees a commit with this trailer, it verifies via the GitHub API that the commit was merged from a PR whose head branch matches the `repo-sync/` prefix.
 3. **branch protection:** branch protection rules on `repo-sync/*` branches ensure only the sync workflow's GitHub token can create or push to them.
 
-a commit is only recognized as sync-originated (and skipped) if **both** the trailer is present **and** the PR branch check passes.  this prevents spoofing — a manually-added trailer without a corresponding `repo-sync/` branch will not suppress syncing.
+a commit is only recognized as sync-originated (and skipped) if **both** the trailer is present **and** the PR branch check passes.  this prevents spoofing -- a manually-added trailer without a corresponding `repo-sync/` branch will not suppress syncing.
+
+## stripping tool
+
+the stripping tool is a **python** CLI that generates a clean snapshot of the private repo at a given commit.  correctness is critical -- the tool must never allow private code to leak into the public repo -- so it will have thorough test coverage.
+
+### algorithm
+
+1. check out the target commit to a temporary working directory
+2. walk the directory tree and remove all directories named `private/` (exact basename match at any depth).  **do not follow symlinks** during the walk
+3. for each remaining file:
+   a. if the file is a symlink, **raise an error** (symlinks are not allowed in synced repos -- they could bypass `private/` directory exclusion.  the CI validation action also checks for this)
+   b. if the file is binary (see text vs. binary detection below), leave it in the snapshot as-is (no marker stripping attempted, but the file is still included in the clean snapshot)
+   c. attempt to read the file as UTF-8.  if decoding fails, **raise an error** (fail-closed -- a file that can't be decoded might contain markers that would be silently skipped)
+   d. strip all `!repo-sync: private-start` / `!repo-sync: private-end` regions:
+      - scan lines for any line containing the string `!repo-sync: private-start` -- this begins a private region
+      - strip all lines from the start marker (inclusive) through the corresponding `!repo-sync: private-end` line (inclusive), leaving no blank line in their place
+      - if a `private-start` is encountered while already inside a private region, raise an error (nesting is not allowed)
+      - if the file ends while inside a private region (no matching `private-end`), raise an error
+   e. if stripping leaves the file with zero remaining lines, keep it as an empty file (do not delete it)
+4. the resulting directory tree is the clean snapshot
+
+### error handling
+
+if the stripping tool encounters any error (nesting, unmatched markers, UTF-8 decode failure, symlinks), the sync workflow **fails** and does **not** update the watermark.  the next run will retry from the same commit.  this is correct fail-closed behavior -- a stripping error might indicate a condition that could cause private code to leak.
+
+on failure, the workflow posts a notification to a configured Slack channel to alert oncall.  all commits after the failing commit are blocked until the issue is resolved.
+
+### marker matching
+
+markers are matched via simple substring search: any line containing `!repo-sync: private-start` or `!repo-sync: private-end` is treated as a marker, regardless of surrounding content (comment syntax, whitespace, etc.).  developers are trusted to use markers sensibly.
+
+### text vs. binary detection
+
+the stripping tool scans all text files in the repo for marker stripping.  binary files are **not stripped** but remain in the snapshot (they are included in the clean output as-is).
+
+a file is classified as binary if its first 8192 bytes contain a null byte (`\x00`).  this is the standard heuristic used by git itself.
+
+note: files that pass the binary check but fail UTF-8 decoding (e.g., UTF-16 encoded files) are treated as errors, not silently skipped.  this prevents a scenario where a file contains `!repo-sync` markers but is misclassified and left unstripped in the public snapshot.
+
+### shared library
+
+the marker parsing and validation logic (pairing checks, nesting detection, region stripping) is implemented as a shared python library used by both the stripping tool and the CI validation action.  the CI validation action invokes the library in a "validate only" mode -- it checks for errors without producing a stripped output.  this avoids having two implementations of the same logic that could drift apart.
+
+## authentication
+
+cross-repo operations (pushing branches, creating PRs in the counterpart repo) are authenticated via a **GitHub App** installed on both repos.
+
+the consuming repo is responsible for generating a short-lived installation token and passing it as the `auth_token` secret to the reusable workflows.  this is typically done using the [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token) action in the consuming repo's wrapper workflow, before calling the reusable workflow.
+
+this is preferred over a PAT because:
+* permissions are scoped to the specific repos the app is installed on
+* tokens are short-lived (1 hour) and auto-rotate
+* no dependency on a personal user account
+
+the GitHub App needs the following permissions:
+* `contents: write` -- push branches
+* `pull_requests: write` -- create and manage PRs
+* `metadata: read` -- required for API access
+
+## reusable workflow interfaces
+
+### sync workflow
+
+there are three separate reusable workflows: one for creating sync PRs (triggered on push to default branch), one for restacking after merge (triggered on PR close), and one for escalation (cron).  separating them avoids unnecessary complexity from multiplexing trigger conditions.
+
+**sync creation workflow** -- triggered by consuming repo on push to default branch:
+
+inputs:
+* `peer_repo` (required) -- the counterpart repo, e.g., `warpdotdev/warp-public`
+* `peer_default_branch` (required) -- e.g., `main`
+* `source_is_private` (required, boolean) -- if `true`, the workflow strips private code before syncing
+* `escalate_to` (optional) -- GitHub team or user to escalate to on timeout.  defaults to `@oncall-client-primary`
+* `slack_webhook_url` (optional) -- Slack webhook for stripping error notifications
+
+secrets:
+* `auth_token` -- GitHub App installation token (or a token with cross-repo push + PR permissions)
+
+**restack workflow** -- triggered by consuming repo on `pull_request` closed+merged for `repo-sync/` branches:
+
+inputs:
+* `peer_repo` (required)
+* `peer_default_branch` (required)
+* `source_is_private` (required, boolean)
+* `escalate_to` (optional)
+
+secrets:
+* `auth_token`
+
+**escalation workflow** -- triggered by consuming repo on a cron schedule (e.g., every 15 minutes):
+
+inputs:
+* `escalate_to` (optional) -- defaults to `@oncall-client-primary`
+* `escalate_after` (required) -- duration before escalation, e.g., `5m`, `1h`
+
+secrets:
+* `auth_token`
+
+the escalation workflow checks all open sync PRs (identified by `repo-sync/` head branches) and performs three checks:
+
+1. **timeout escalation:** if the PR has a `Repo-Sync-Assigned` trailer and the elapsed time since the timestamp exceeds `escalate_after`, a review is requested from `escalate_to`.
+2. **CI failure detection:** if the PR has auto-merge enabled but CI has failed (required status checks are not passing), the workflow disables auto-merge, requests a review from the appropriate person (using the same assignment logic as conflict resolution), and appends a `Repo-Sync-Assigned` trailer to begin the escalation clock.
+3. **stuck stack recovery:** if a sync PR's base branch no longer exists (the PR below it was merged and the branch deleted) but the PR has not been restacked, the workflow triggers the restack logic for that PR.
+
+### CI validation action
+
+a reusable composite action that validates `!repo-sync` marker correctness.  intended to be added to CI workflows in private repos.
+
+inputs:
+* `paths` (optional) -- restrict validation to specific file paths/globs.  defaults to all files in the repo
+
+validation checks:
+* every `private-start` has a matching `private-end` in the same file
+* no nested markers (a `private-start` inside an open region)
+* no symlinks present in the repository (symlinks could bypass `private/` directory exclusion)
+
+### consuming repo integration
+
+a consuming repo's workflow file would look roughly like:
+
+```yaml
+# .github/workflows/repo-sync.yml
+name: repo-sync
+on:
+  push:
+    branches: [main]
+jobs:
+  sync:
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    with:
+      peer_repo: warpdotdev/warp-public
+      peer_default_branch: main
+      source_is_private: true
+    secrets:
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+```
+
+consuming repos pin to a **major version** (e.g., `@v1`) of the repo-sync workflows.  this ensures changes to repo-sync don't break consumers unexpectedly, while allowing minor/patch updates.
+
+## oz agent skills
+
+skills live in `.agents/skills/` in this repository.  they are invoked from the sync workflows via `oz agent run --skill warpdotdev/repo-sync:<skill-name>`, or programmatically via the [Oz Python SDK](https://github.com/warpdotdev/oz-sdk-python).
+
+### conflict resolution skill
+
+location: `.agents/skills/conflict-resolution/SKILL.md`
+
+this is a generic merge conflict resolution agent -- it does not need to know about sync direction or repo-sync internals.  it just resolves merge conflicts.
+
+**context the agent receives:**
+* the repo, checked out to the sync branch with conflict markers present
+* the list of conflicting files (from `git diff --name-only --diff-filter=U`)
+
+**what the agent does:**
+1. reads the conflicting files and resolves the merge conflict markers
+2. ensures the code compiles and is properly formatted
+3. runs any tests it believes may be affected by the resolution
+4. commits the resolution
+5. pushes to the sync branch
+
+**failure handling:** if the agent errors, fails to produce a clean resolution, or produces code that doesn't compile, the workflow treats it as a failure and proceeds to assign the PR to a human without an agent-proposed resolution.
+
+### PR description skill
+
+location: `.agents/skills/pr-description/SKILL.md`
+
+used only for private-to-public sync PRs, where the description must be generated from the public diff without access to private commit messages or PR descriptions.
+
+### isolation
+
+the PR description agent is run inside a **Docker container** with the **clean snapshot** mounted as the working directory.  this provides a hard isolation boundary -- the agent has access to the full (stripped) codebase for context, but cannot access the private repo's git history, private files, commit messages, or PR metadata.
+
+the workflow:
+1. generates the clean snapshot (as part of the normal stripping process)
+2. builds/pulls a Docker image with `oz` and necessary tooling
+3. mounts the following as read-only volumes into the container:
+   - the clean snapshot (as the working directory)
+   - the public diff
+   - the skill file (`.agents/skills/pr-description/SKILL.md` from the `repo-sync` checkout)
+4. runs the agent inside the container with the mounted skill (no network fetch required for skill resolution)
+5. captures the agent's output (title + description) from the container
+
+**context the agent receives:**
+* the clean snapshot mounted as the working directory (full codebase context, no private code)
+* the public diff being synced
+
+**what the agent produces:**
+* a PR title
+* a human-readable PR description summarizing what changed
+
+the agent is **not** responsible for adding the `Repo-Sync-Origin` trailer -- that is appended by deterministic code in the workflow after the agent produces its description.  this ensures the trailer is always present and correctly formatted, regardless of agent behavior.
+
+### public-to-private PR descriptions
+
+public-to-private sync PRs do not use an agent.  the PR title and description are constructed deterministically by the workflow:
+* title: copied from the source public PR (or commit message for direct pushes)
+* description: copied from the source PR description, with a header prepended: "Synced from \<public repo name\>: \<URL to source PR or commit\>"
+* the `Repo-Sync-Origin` trailer is appended to the description
+
+## bootstrap
+
+the first sync requires a one-time bootstrap to create the public repo from the private repo.  this is a separate script/workflow (not the regular sync workflow).
+
+bootstrap steps:
+1. generate a clean snapshot of the private repo at `HEAD`
+2. push the snapshot as the initial commit to the new (or existing empty) public repo, with a `Repo-Sync-Origin: <private-repo>@<HEAD-sha>` trailer in the commit message
+3. set the watermark tag `repo-sync/watermark/private-to-public` in the public repo pointing to this initial commit
+4. set the watermark tag `repo-sync/watermark/public-to-private` in the private repo pointing to a sentinel value (e.g., the empty tree SHA or a special "bootstrap" tag) so the public→private workflow knows there are no public commits to sync yet
+
+the bootstrap commit in the public repo includes the `Repo-Sync-Origin` trailer, so the public→private workflow will recognize it as sync-originated and skip it (preventing it from being replayed back into the private repo).
+
+after bootstrap, the regular sync workflows take over.
