@@ -72,7 +72,7 @@ when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event 
 4. updates the PR's base branch to `main` (or the new bottom of the stack)
 5. if the rebase succeeds cleanly, enables GitHub auto-merge (waits for CI to pass, then merges automatically)
 6. if CI fails after a clean rebase, assigns the PR to a human reviewer (same assignment logic as conflict resolution, but without invoking the agent)
-7. if the rebase has conflicts, invokes the conflict resolution agent
+7. if the rebase has conflicts, invokes the conflict resolution agent.  after the agent commits a resolution (or fails), a reviewer is **always** requested -- agent-resolved conflicts require human sign-off before merging.  auto-merge is **not** enabled on conflict-resolved PRs
 
 the merged sync branch can be safely deleted after the watermark is updated (GitHub's auto-delete-on-merge is compatible with this approach).
 
@@ -306,6 +306,8 @@ the workflow:
 * a human-readable PR description summarizing what changed
 
 the agent is **not** responsible for adding the `Repo-Sync-Origin` trailer -- that is appended by deterministic code in the workflow after the agent produces its description.  this ensures the trailer is always present and correctly formatted, regardless of agent behavior.
+
+**failure handling:** if the PR description agent fails, the workflow falls back to a generic description that includes a reference to the source commit in the private repo (e.g., "repo-sync: sync from private (source: `<short-sha>`)").  the `Repo-Sync-Origin` trailer is still appended by deterministic code.  the sync is not blocked by a description agent failure.
 
 ### public-to-private PR descriptions
 
