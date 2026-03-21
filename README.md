@@ -58,7 +58,7 @@ when a sync PR encounters a **git merge conflict**:
 1. a **local oz agent** is invoked from within the github actions workflow (using the oz CLI), to avoid paying for idle github actions minutes while a cloud agent runs
 2. the agent adds a commit to the sync PR with a proposed conflict resolution
 3. the person who merged the source PR is requested as reviewer; for direct pushes (no source PR), the commit author is requested instead.  if neither can be determined, request review from `@oncall-client-primary`
-4. if the reviewer doesn't respond within a configurable timeout, review is requested from `@oncall-client-primary`
+4. if the reviewer doesn't respond within a configurable timeout, review is requested from the configured escalation team (defaults to `@oncall-client-primary`)
 5. if the agent fails (e.g., it errors or produces a resolution that does not apply cleanly), the PR is still assigned to the merger, but without an agent-proposed resolution
 
 build failures after a clean rebase do **not** trigger the conflict resolution agent; they are assigned directly to a human reviewer.

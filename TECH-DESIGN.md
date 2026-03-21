@@ -193,7 +193,7 @@ inputs:
 secrets:
 * `auth_token` -- GitHub App installation token (or a token with cross-repo push + PR permissions)
 
-**restack workflow** -- triggered by consuming repo on `pull_request` closed+merged for `repo-sync/` branches:
+**restack workflow** -- triggered by consuming repo on `pull_request` closed+merged for `repo-sync/` branches, or dispatched by the escalation cron for stuck stack recovery.  uses a concurrency group to serialize all restack operations:
 
 inputs:
 * `peer_repo` (required)
@@ -217,7 +217,7 @@ the escalation workflow checks all open sync PRs (identified by `repo-sync/` hea
 
 1. **timeout escalation:** if the PR has a `Repo-Sync-Assigned` trailer and the elapsed time since the timestamp exceeds `escalate_after`, a review is requested from `escalate_to`.
 2. **CI failure detection:** if the PR has auto-merge enabled but CI has failed (required status checks are not passing), the workflow disables auto-merge, requests a review from the appropriate person (using the same assignment logic as conflict resolution), and appends a `Repo-Sync-Assigned` trailer to begin the escalation clock.
-3. **stuck stack recovery:** if a sync PR's base branch no longer exists (the PR below it was merged and the branch deleted) but the PR has not been restacked, the workflow triggers the restack logic for that PR.
+3. **stuck stack recovery:** if a sync PR's base branch no longer exists (the PR below it was merged and the branch deleted) but the PR has not been restacked, the escalation cron dispatches the restack workflow for that PR (via `workflow_dispatch` or equivalent).  the actual restack logic lives only in the restack workflow, keeping a single codepath for all restacking.  the restack workflow's concurrency group ensures that simultaneous triggers (e.g., from a PR merge event and a cron dispatch) are serialized.
 
 ### CI validation action
 

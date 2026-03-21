@@ -32,8 +32,9 @@ this document lists test cases for validating the repo-sync implementation, orga
 
 ### symlink handling
 
-- a symlink anywhere in the repo tree raises an error
+- a symlink anywhere in the repo tree (outside of `private/` directories) raises an error
 - a symlink inside a `private/` directory (which gets removed before symlink check) does **not** raise an error -- it's removed with the directory
+- a symlink named exactly `private` (pointing to a directory) is **not** treated as a `private/` directory -- it survives directory removal and then triggers the symlink error in the file walk
 - a symlink pointing to a file outside the repo raises an error
 - a symlink pointing to a `private/` directory raises an error
 
@@ -87,8 +88,7 @@ the following assignment tests apply to all contexts where a reviewer is request
 - a commit that modifies only private code (inside `private/` dirs or `!repo-sync` markers) produces no sync PR (empty diff, skipped)
 - a commit that modifies both public and private code produces a sync PR containing only the public changes
 - the sync PR's commit message is generic (does not contain the source commit's message)
-- the `Repo-Sync-Origin` trailer is present in the PR description
-- the PR description contains a reference back to the source commit
+- the `Repo-Sync-Origin` trailer is present in the PR description (this is the reference back to the source commit, added by deterministic code)
 
 ### multiple unsynced commits
 
@@ -96,6 +96,7 @@ the following assignment tests apply to all contexts where a reviewer is request
 - the stack ordering matches the chronological order of source commits
 - if some commits in a batch are internal-only (empty diff), they are skipped and no PR is created for them, but subsequent commits are still processed
 - the watermark advances correctly after each sync PR merges
+- if commits A (internal-only) and B (public) are both unsynced: A is skipped, B produces a PR.  if the workflow runs again before B merges, it re-evaluates both, skips A again, and does not duplicate B (idempotency guard).  when B's PR merges, the watermark advances past both A and B
 
 ### idempotency
 
@@ -173,6 +174,13 @@ the following assignment tests apply to all contexts where a reviewer is request
 - after agent conflict resolution during restacking, a reviewer is **always** requested (human sign-off required)
 - auto-merge is **not** enabled on conflict-resolved PRs during restacking
 
+### 3+ PR stack
+
+- with PRs A, B, C in a stack (A is bottom, base = default branch): when A merges, B is restacked onto the default branch and becomes the new bottom.  C remains based on B's branch and is not touched
+- after B auto-merges, C is restacked onto the default branch and becomes the new bottom
+- each PR's diff shows only the changes for its single corresponding commit throughout the restacking process
+- the watermark advances correctly through A, B, C as each merges
+
 ### squash merge interaction
 
 - after a squash merge, the restack correctly uses `--onto` to avoid duplicate-change conflicts
@@ -197,7 +205,8 @@ the following assignment tests apply to all contexts where a reviewer is request
 ### stuck stack recovery
 
 - a sync PR whose base branch no longer exists (merged and deleted) is detected
-- the restack logic is triggered for that PR
+- the escalation cron dispatches the restack workflow for that PR (it does not perform the restack itself)
+- the restack workflow's concurrency group prevents simultaneous restacking from multiple triggers
 - a sync PR whose base branch still exists is not flagged
 
 ## bootstrap
