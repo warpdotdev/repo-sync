@@ -194,6 +194,18 @@ jobs:
           WATERMARK_REPO="${{ steps.direction.outputs.watermark_repo }}"
           MERGE_SHA="${{ steps.merged_pr.outputs.merge_sha }}"
 
+          # Validate the merge commit has a Repo-Sync-Origin trailer before
+          # updating the watermark.  If the trailer is missing (e.g. due to
+          # misconfigured squash merge settings), fail loudly rather than
+          # silently corrupting the watermark.
+          COMMIT_MSG=$(gh api "/repos/${WATERMARK_REPO}/git/commits/${MERGE_SHA}" \
+            --jq '.message' 2>/dev/null || true)
+          if ! echo "$COMMIT_MSG" | grep -q '^Repo-Sync-Origin:'; then
+            echo "::error::Merge commit ${MERGE_SHA} has no Repo-Sync-Origin trailer. Cannot update watermark."
+            echo "Check that squash merge is configured to preserve the PR description in the commit message."
+            exit 1
+          fi
+
           echo "Updating watermark tag '${WATERMARK_TAG}' in ${WATERMARK_REPO} to ${MERGE_SHA}."
 
           # Try to update existing tag; create if it doesn't exist.
@@ -357,12 +369,11 @@ jobs:
           # Auto-merge is NOT enabled on conflict-resolved PRs.
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          # Parse source info from the PR body to determine the reviewer.
-          PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
-          SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
-            | sed 's/^Repo-Sync-Origin: *//')
-          SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
-          SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
+          # Parse source info via Python to avoid duplicating trailer parsing.
+          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
+            --pr-number "${NEXT_PR_NUMBER}" --gh-repo "${{ github.repository }}")
+          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
+          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
 
           REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
             --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
@@ -383,11 +394,10 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
           # Agent failed — assign to human without a proposed resolution.
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
-          SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
-            | sed 's/^Repo-Sync-Origin: *//')
-          SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
-          SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
+          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
+            --pr-number "${NEXT_PR_NUMBER}" --gh-repo "${{ github.repository }}")
+          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
+          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
 
           REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
             --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \

@@ -196,9 +196,22 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
 Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 fi
               fi
+              # Append Repo-Sync-Origin trailer to the commit regardless of
+              # whether the cherry-pick succeeded cleanly or the agent resolved
+              # conflicts.  This ensures the trailer is always present in the
+              # commit message for loop detection.
               if [ "$CHERRY_PICK_FAILED" = "false" ]; then
                 git commit --amend -m "$(git log -1 --format='%B')
+
 Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              else
+                # Agent-resolved cherry-pick: amend the agent's commit to add the trailer.
+                EXISTING_MSG=$(git log -1 --format='%B')
+                if ! echo "$EXISTING_MSG" | grep -q '^Repo-Sync-Origin:'; then
+                  git commit --amend --no-edit -m "${EXISTING_MSG}
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                fi
               fi
               # Build description via Python.
               COMMIT_SUBJECT=$(git log -1 --format='%s' "${SOURCE_SHA}" 2>/dev/null || echo "sync")
