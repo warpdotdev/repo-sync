@@ -9,8 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from urllib.parse import quote
 
-# Duplicated from branches.py to avoid a circular import (branches imports GhOps).
-_SYNC_BRANCH_PREFIX = "repo-sync/"
+from repo_sync.stack.constants import SYNC_BRANCH_PREFIX
 
 
 @dataclass
@@ -85,6 +84,7 @@ class GhOps:
         if not prs:
             return None
         pr = prs[0]
+        state = pr["state"].upper()
         return PullRequest(
             number=pr["number"],
             head_branch=pr["headRefName"],
@@ -92,8 +92,8 @@ class GhOps:
             title=pr["title"],
             body=pr.get("body") or "",
             url=pr["url"],
-            state=pr["state"],
-            merged=pr["state"] == "MERGED",
+            state=state,
+            merged=state == "MERGED",
             auto_merge_enabled=pr.get("autoMergeRequest") is not None,
         )
 
@@ -269,7 +269,7 @@ class GhOps:
             title=pr["title"],
             body=pr.get("body") or "",
             url=pr["html_url"],
-            state=pr["state"],
+            state=pr["state"].upper(),
             merged=True,
         )
 
@@ -321,7 +321,7 @@ class GhOps:
                 break
             for pr in prs:
                 head_branch = pr["head"]["ref"]
-                if head_branch.startswith(_SYNC_BRANCH_PREFIX):
+                if head_branch.startswith(SYNC_BRANCH_PREFIX):
                     all_sync_prs.append(
                         PullRequest(
                             number=pr["number"],
@@ -330,7 +330,7 @@ class GhOps:
                             title=pr["title"],
                             body=pr.get("body") or "",
                             url=pr["html_url"],
-                            state=pr["state"],
+                            state=pr["state"].upper(),
                             auto_merge_enabled=pr.get("auto_merge") is not None,
                         )
                     )

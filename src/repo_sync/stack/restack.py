@@ -57,6 +57,25 @@ def restack_pr(
 
     Returns a RestackOutcome indicating success or conflict.
     """
+    # Guard against duplicate restack: if the branch is already based on
+    # default_branch (e.g. a previous restack succeeded but the PR metadata
+    # update failed), skip the rebase and proceed to metadata updates.
+    merge_base = git._run(
+        ["merge-base", default_branch, next_pr_branch]
+    ).stdout
+    default_tip = git.rev_parse(default_branch)
+    if merge_base == default_tip:
+        git.push(remote, next_pr_branch, force=True)
+        gh.update_pr_base(next_pr_number, default_branch)
+        set_auto_merge(
+            gh,
+            next_pr_number,
+            base_branch=default_branch,
+            default_branch=default_branch,
+            conflict_resolved=False,
+        )
+        return RestackOutcome(result=RestackResult.SUCCESS)
+
     # Rebase: drop the merged PR's commits and replay only the next PR's.
     # Note: rebase --onto checks out the target branch automatically.
     result = git.rebase_onto(

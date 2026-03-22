@@ -9,12 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from repo_sync.stack.constants import SYNC_BRANCH_PREFIX
 from repo_sync.stack.gh_ops import GhOps, PullRequest
 from repo_sync.stack.git_ops import GitOps
-
-
-# Branch prefix used by all sync branches.
-SYNC_BRANCH_PREFIX = "repo-sync/"
 
 
 def sync_branch_name(direction: str, short_sha: str) -> str:

@@ -129,9 +129,17 @@ class TestRestackPr:
         source_git, _ = tmp_git_repo_pair
         gh = MagicMock(spec=GhOps)
 
-        # Create a branch to restack.
-        source_git.create_branch("sync/bbb", "main")
+        # Create a branch A with a commit (so sync/bbb is NOT already based on main tip).
+        source_git.create_branch("sync/aaa", "main")
+        make_commit(source_git, "a.txt", "a", "commit A")
+
+        # Create branch B stacked on A.
+        source_git.create_branch("sync/bbb", "sync/aaa")
         make_commit(source_git, "b.txt", "b", "commit B")
+
+        # Advance main so sync/bbb is diverged.
+        source_git.checkout("main")
+        make_commit(source_git, "main.txt", "m", "advance main")
 
         # Use a nonexistent ref as the merged_pr_branch_tip.
         outcome = restack_pr(
