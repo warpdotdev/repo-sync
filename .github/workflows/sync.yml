@@ -134,7 +134,10 @@ jobs:
             if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
               # --- Private-to-public: strip, tree replacement, Docker agent. ---
               SNAPSHOT_DIR="/tmp/snapshot-${SHORT_SHA}"
-              if ! python -m repo_sync.strip "${SOURCE_SHA}" "${SNAPSHOT_DIR}"; then
+              mkdir -p "${SNAPSHOT_DIR}"
+              # Extract the tree at SOURCE_SHA into SNAPSHOT_DIR, then strip in-place.
+              git archive "${SOURCE_SHA}" | tar -x -C "${SNAPSHOT_DIR}"
+              if ! python -m repo_sync.strip.cli "${SNAPSHOT_DIR}"; then
                 [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
                   --data "{\"text\":\"repo-sync: stripping failed for ${SHORT_SHA} in ${SOURCE_REPO}.\"}" \
                   "$SLACK_WEBHOOK_URL" || true
