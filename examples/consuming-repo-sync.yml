@@ -56,8 +56,10 @@ jobs:
         with:
           app-id: ${{ secrets.REPO_SYNC_APP_ID }}
           private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
-          # Grant access to both repos.
-          repositories: ${{ github.event.repository.name }},${{ env.PEER_REPO }}
+          # Grant access to both repos.  The repositories input expects repo
+          # names without the owner prefix.
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},warp-public
 
   # -----------------------------------------------------------------------
   # Sync creation: triggered on push to default branch.

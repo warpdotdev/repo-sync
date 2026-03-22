@@ -130,7 +130,12 @@ jobs:
               if [ -n "$ASSIGNED_TIMESTAMP" ]; then
                 # Convert ISO-8601 timestamp to epoch seconds.
                 ASSIGNED_EPOCH=$(date -u -d "$ASSIGNED_TIMESTAMP" +%s 2>/dev/null || \
-                  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ASSIGNED_TIMESTAMP" +%s 2>/dev/null || echo "0")
+                  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ASSIGNED_TIMESTAMP" +%s 2>/dev/null || echo "")
+
+                if [ -z "$ASSIGNED_EPOCH" ]; then
+                  echo "PR #${PR_NUMBER}: could not parse Repo-Sync-Assigned timestamp '${ASSIGNED_TIMESTAMP}'. Skipping."
+                  continue
+                fi
 
                 ELAPSED=$((NOW_EPOCH - ASSIGNED_EPOCH))
                 if [ "$ELAPSED" -gt "$TIMEOUT_SECONDS" ]; then
@@ -148,6 +153,12 @@ jobs:
             # failed, disable auto-merge and assign a reviewer.
             # -----------------------------------------------------------
             if [ -n "$AUTO_MERGE" ]; then
+              # Skip if a reviewer is already assigned (Repo-Sync-Assigned trailer exists).
+              # This prevents resetting the escalation clock on repeated cron runs.
+              ALREADY_ASSIGNED=$(echo "$PR_BODY" | grep '^Repo-Sync-Assigned:' || true)
+              if [ -n "$ALREADY_ASSIGNED" ]; then
+                echo "PR #${PR_NUMBER}: reviewer already assigned, skipping CI failure check."
+              else
               # Check the status of required checks on the PR's head commit.
               HEAD_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq '.headRefOid')
 
@@ -199,6 +210,7 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
                 echo "Assigned PR #${PR_NUMBER} to ${REVIEWER} (CI failure)."
               else
                 echo "PR #${PR_NUMBER}: auto-merge enabled, CI passing or pending."
+              fi
               fi
             fi
 

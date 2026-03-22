@@ -263,12 +263,12 @@ jobs:
 
           # If there are already open sync PRs (from a previous partial run),
           # find the top of the existing stack to continue from.
+          # Use jq prefix filtering since --head does exact match, not prefix match.
           EXISTING_TOP=$(gh pr list \
             --repo "${PEER_REPO}" \
-            --head "${BRANCH_PREFIX}/" \
             --state open \
             --json headRefName,number \
-            --jq 'sort_by(.number) | last | .headRefName // empty' 2>/dev/null || true)
+            --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}/\"))] | sort_by(.number) | last | .headRefName // empty" 2>/dev/null || true)
 
           if [ -n "$EXISTING_TOP" ]; then
             STACK_BASE_BRANCH="$EXISTING_TOP"
@@ -430,6 +430,14 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
               echo "Cherry-picking ${SOURCE_SHA} into peer repo..."
 
               pushd peer > /dev/null
+
+              # Add the source repo as a remote so we can access its commit objects.
+              # The source repo checkout is in the parent directory.
+              if ! git remote get-url source >/dev/null 2>&1; then
+                git remote add source "$(cd .. && pwd)"
+              fi
+              git fetch source
+
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
 
@@ -488,7 +496,8 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
 
 ${SOURCE_PR_BODY}"
               else
-                # Direct push (no source PR).  Use commit message.
+              # Direct push (no source PR).  Use commit message.
+                # The source SHA is in the 'source' remote, so we can read its message.
                 COMMIT_MSG=$(git log -1 --format='%s' "${SOURCE_SHA}" 2>/dev/null \
                   || echo "repo-sync: sync from public (${SHORT_SHA})")
                 COMMIT_BODY=$(git log -1 --format='%b' "${SOURCE_SHA}" 2>/dev/null || true)

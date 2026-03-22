@@ -11,6 +11,19 @@ name: restack
 on:
   workflow_call:
     inputs:
+      # Note: pr_number is only used by workflow_dispatch (stuck stack recovery).
+      pr_number:
+        description: "PR number to restack (used by stuck stack recovery dispatch)."
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to restack (used by stuck stack recovery dispatch)."
+        required: false
+        type: string
+        default: ""
       peer_repo:
         description: "Counterpart repo (e.g. warpdotdev/warp-public)."
         required: true
@@ -81,21 +94,37 @@ jobs:
 
       # ---------------------------------------------------------------
       # Determine direction and watermark tag location.
+      # The restack workflow runs in the TARGET repo (where sync PRs are
+      # merged).  When source_is_private=true, this repo is the PUBLIC
+      # repo receiving private-to-public sync PRs.  When
+      # source_is_private=false, this repo is the PRIVATE repo receiving
+      # public-to-private sync PRs.
+      #
+      # We detect the actual direction from the merged PR's branch name
+      # when available (more robust), falling back to the input flag.
+      # The watermark lives in THIS repo (the target), not the peer.
       # ---------------------------------------------------------------
       - name: Set direction variables
         id: direction
         run: |
-          if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
-            echo "label=private-to-public" >> "$GITHUB_OUTPUT"
-            echo "branch_prefix=repo-sync/private-to-public" >> "$GITHUB_OUTPUT"
-            # Watermark lives in the peer (public) repo for private-to-public.
-            echo "watermark_repo=${PEER_REPO}" >> "$GITHUB_OUTPUT"
+          # Try to detect direction from the merged PR's branch name.
+          MERGED_HEAD="${{ github.event.pull_request.head.ref || '' }}"
+          if echo "$MERGED_HEAD" | grep -q '^repo-sync/private-to-public/'; then
+            DIRECTION="private-to-public"
+          elif echo "$MERGED_HEAD" | grep -q '^repo-sync/public-to-private/'; then
+            DIRECTION="public-to-private"
+          elif [ "$SOURCE_IS_PRIVATE" = "true" ]; then
+            # Fallback: source_is_private=true means THIS repo is the public
+            # target receiving private-to-public PRs.
+            DIRECTION="private-to-public"
           else
-            echo "label=public-to-private" >> "$GITHUB_OUTPUT"
-            echo "branch_prefix=repo-sync/public-to-private" >> "$GITHUB_OUTPUT"
-            # Watermark lives in the peer (private) repo for public-to-private.
-            echo "watermark_repo=${PEER_REPO}" >> "$GITHUB_OUTPUT"
+            DIRECTION="public-to-private"
           fi
+
+          echo "label=${DIRECTION}" >> "$GITHUB_OUTPUT"
+          echo "branch_prefix=repo-sync/${DIRECTION}" >> "$GITHUB_OUTPUT"
+          # The watermark lives in THIS repo (the target repo where the PR merged).
+          echo "watermark_repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
       # Identify the merged PR.  For workflow_dispatch (stuck stack
@@ -127,11 +156,14 @@ jobs:
           MERGE_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
           echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
 
-          # Get the head branch of the merged PR (to use as the old base for
-          # rebase --onto).
+          # Get the head branch and its tip commit SHA.  We need the tip SHA
+          # because the branch may have been auto-deleted after merge, making
+          # origin/<branch> unresolvable during rebase --onto.
           HEAD_BRANCH=$(gh pr view "$MERGED_PR_NUMBER" --json headRefName --jq '.headRefName')
+          HEAD_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json headRefOid --jq '.headRefOid')
           echo "merged_head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head branch ${HEAD_BRANCH}."
+          echo "merged_head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head branch ${HEAD_BRANCH}, head SHA ${HEAD_SHA}."
 
       # ---------------------------------------------------------------
       # Update the watermark tag to point to the merge commit.
@@ -217,7 +249,7 @@ jobs:
         id: rebase
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
+          MERGED_HEAD_SHA="${{ steps.merged_pr.outputs.merged_head_sha }}"
           NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
@@ -229,12 +261,13 @@ jobs:
           #
           # git rebase --onto <new-base> <old-base> <branch>
           # - new-base: origin/<default-branch> (the updated main after squash merge).
-          # - old-base: origin/<merged-branch> tip (the commits to drop).
+          # - old-base: the merged PR's head commit SHA (not branch ref, since
+          #   the branch may have been auto-deleted after merge).
           # - branch: the next PR's branch.
           REBASE_SUCCEEDED="true"
           git checkout "${NEXT_BRANCH}"
 
-          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "origin/${MERGED_BRANCH}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
+          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${MERGED_HEAD_SHA}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
             echo "Rebase has conflicts."
             REBASE_SUCCEEDED="false"
           fi
