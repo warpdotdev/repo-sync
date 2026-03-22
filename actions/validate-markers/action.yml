@@ -1,0 +1,37 @@
+name: "Validate repo-sync markers"
+description: >
+  Validates that all !repo-sync markers are properly paired and non-nested,
+  and that no symlinks exist in the repository.
+
+inputs:
+  paths:
+    description: >
+      Space-separated list of relative file paths or globs to validate.
+      Defaults to all files in the repository.
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install repo-sync package
+      shell: bash
+      run: pip install "${{ github.action_path }}/../../"
+
+    - name: Run marker validation
+      shell: bash
+      env:
+        PATHS_INPUT: ${{ inputs.paths }}
+      run: |
+        args=("--validate-only" "${{ github.workspace }}")
+        if [ -n "$PATHS_INPUT" ]; then
+          for p in $PATHS_INPUT; do
+            args+=("$p")
+          done
+        fi
+        repo-sync-strip "${args[@]}"
