@@ -92,38 +92,16 @@ jobs:
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
 
-      # ---------------------------------------------------------------
-      # Determine direction and watermark tag location.
-      # The restack workflow runs in the TARGET repo (where sync PRs are
-      # merged).  When source_is_private=true, this repo is the PUBLIC
-      # repo receiving private-to-public sync PRs.  When
-      # source_is_private=false, this repo is the PRIVATE repo receiving
-      # public-to-private sync PRs.
-      #
-      # We detect the actual direction from the merged PR's branch name
-      # when available (more robust), falling back to the input flag.
-      # The watermark lives in THIS repo (the target), not the peer.
-      # ---------------------------------------------------------------
+      # Direction detection and watermark repo via Python CLI.
       - name: Set direction variables
         id: direction
         run: |
-          # Try to detect direction from the merged PR's branch name.
-          MERGED_HEAD="${{ github.event.pull_request.head.ref || '' }}"
-          if echo "$MERGED_HEAD" | grep -q '^repo-sync/private-to-public/'; then
-            DIRECTION="private-to-public"
-          elif echo "$MERGED_HEAD" | grep -q '^repo-sync/public-to-private/'; then
-            DIRECTION="public-to-private"
-          elif [ "$SOURCE_IS_PRIVATE" = "true" ]; then
-            # Fallback: source_is_private=true means THIS repo is the public
-            # target receiving private-to-public PRs.
-            DIRECTION="private-to-public"
-          else
-            DIRECTION="public-to-private"
-          fi
-
-          echo "label=${DIRECTION}" >> "$GITHUB_OUTPUT"
-          echo "branch_prefix=repo-sync/${DIRECTION}" >> "$GITHUB_OUTPUT"
-          # The watermark lives in THIS repo (the target repo where the PR merged).
+          PRIVATE_FLAG=""
+          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          python -m repo_sync.workflows.cli detect-direction \
+            --head-branch "${{ github.event.pull_request.head.ref || '' }}" \
+            $PRIVATE_FLAG
+          # Watermark lives in THIS repo (the target).
           echo "watermark_repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
