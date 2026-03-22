@@ -59,7 +59,6 @@ jobs:
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
       peer_repo: warpdotdev/warp-public
-      peer_default_branch: main
       source_is_private: true
       escalate_to: "@oncall-client-primary"
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
@@ -78,7 +77,6 @@ jobs:
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
       peer_repo: warpdotdev/warp-public
-      peer_default_branch: main
       source_is_private: true
       escalate_to: "@oncall-client-primary"
     secrets:
@@ -95,7 +93,6 @@ jobs:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
       peer_repo: warpdotdev/warp-public
-      peer_default_branch: main
       source_is_private: true
     secrets:
       auth_token: ${{ needs.auth.outputs.token }}

@@ -15,10 +15,6 @@ on:
         description: "Counterpart repo (e.g. warpdotdev/warp-public)."
         required: true
         type: string
-      peer_default_branch:
-        description: "Default branch of the peer repo (e.g. main)."
-        required: true
-        type: string
       source_is_private:
         description: "If true, this repo is private (determines watermark direction)."
         required: true
@@ -45,10 +41,6 @@ on:
         type: string
       peer_repo:
         description: "Counterpart repo (e.g. warpdotdev/warp-public)."
-        required: true
-        type: string
-      peer_default_branch:
-        description: "Default branch of the peer repo (e.g. main)."
         required: true
         type: string
       source_is_private:
@@ -80,7 +72,6 @@ jobs:
       pull-requests: write
     env:
       PEER_REPO: ${{ inputs.peer_repo }}
-      PEER_DEFAULT_BRANCH: ${{ inputs.peer_default_branch }}
       SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:

@@ -11,14 +11,18 @@
 #   ./scripts/bootstrap.sh \
 #     --private-repo <owner/repo> \
 #     --public-repo <owner/repo> \
-#     --public-default-branch <branch> \
 #     --token <github-token>
+#
+# The token must have contents:write and pull_requests:write on both repos.
+# You can generate one by:
+#   - Creating a GitHub App installation token (recommended for production).
+#   - Using a fine-grained PAT with the required permissions (simpler for one-time use).
 #
 # Prerequisites:
 #   - The private repo must be checked out locally (script runs from its root).
-#   - The public repo must exist (can be empty or newly created).
+#   - The public repo must exist and be empty (no commits).
 #   - The stripping tool must be installed (pip install -e . from the repo-sync repo).
-#   - gh CLI must be authenticated with the provided token.
+#   - gh CLI must be installed.
 #   - git must be configured with user.name and user.email.
 
 set -euo pipefail
@@ -28,7 +32,6 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 PRIVATE_REPO=""
 PUBLIC_REPO=""
-PUBLIC_DEFAULT_BRANCH="main"
 TOKEN=""
 
 while [[ $# -gt 0 ]]; do
@@ -39,10 +42,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --public-repo)
       PUBLIC_REPO="$2"
-      shift 2
-      ;;
-    --public-default-branch)
-      PUBLIC_DEFAULT_BRANCH="$2"
       shift 2
       ;;
     --token)
@@ -58,7 +57,6 @@ done
 
 if [ -z "$PRIVATE_REPO" ] || [ -z "$PUBLIC_REPO" ] || [ -z "$TOKEN" ]; then
   echo "Usage: $0 --private-repo <owner/repo> --public-repo <owner/repo> --token <token>" >&2
-  echo "Optional: --public-default-branch <branch> (default: main)" >&2
   exit 1
 fi
 
@@ -66,10 +64,14 @@ export GH_TOKEN="$TOKEN"
 HEAD_SHA=$(git rev-parse HEAD)
 SHORT_SHA="${HEAD_SHA:0:7}"
 
+# Use the private repo's default branch for both repos.
+DEFAULT_BRANCH=$(gh api "/repos/${PRIVATE_REPO}" --jq '.default_branch')
+
 echo "=== repo-sync bootstrap ==="
-echo "Private repo: ${PRIVATE_REPO}"
-echo "Public repo:  ${PUBLIC_REPO}"
-echo "HEAD:         ${HEAD_SHA}"
+echo "Private repo:   ${PRIVATE_REPO}"
+echo "Public repo:    ${PUBLIC_REPO}"
+echo "Default branch: ${DEFAULT_BRANCH}"
+echo "HEAD:           ${HEAD_SHA}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -78,9 +80,9 @@ echo ""
 echo "Step 1: Generating clean snapshot..."
 SNAPSHOT_DIR=$(mktemp -d)
 
-# Invoke the stripping tool.
-# Expected interface: python -m repo_sync.strip <commit-sha> <output-dir>.
-python -m repo_sync.strip "${HEAD_SHA}" "${SNAPSHOT_DIR}"
+# Extract the tree at HEAD and strip it in-place.
+git archive "${HEAD_SHA}" | tar -x -C "${SNAPSHOT_DIR}"
+python -m repo_sync.strip.cli "${SNAPSHOT_DIR}"
 echo "Clean snapshot generated at ${SNAPSHOT_DIR}."
 
 # ---------------------------------------------------------------------------
@@ -91,8 +93,8 @@ WORK_DIR=$(mktemp -d)
 
 pushd "$WORK_DIR" > /dev/null
 
-# Initialize a new git repo and create the initial commit.
-git init -b "${PUBLIC_DEFAULT_BRANCH}"
+# Initialize a new git repo using the same default branch as the private repo.
+git init -b "${DEFAULT_BRANCH}"
 cp -a "${SNAPSHOT_DIR}/." .
 git add -A
 
@@ -124,8 +126,8 @@ if [ "$EXISTING_COMMITS" -gt 0 ]; then
   exit 1
 fi
 
-git push -u origin "${PUBLIC_DEFAULT_BRANCH}"
-echo "Pushed to ${PUBLIC_REPO}/${PUBLIC_DEFAULT_BRANCH}."
+git push -u origin "${DEFAULT_BRANCH}"
+echo "Pushed to ${PUBLIC_REPO}/${DEFAULT_BRANCH}."
 
 popd > /dev/null
 
@@ -137,7 +139,7 @@ echo "Step 3: Setting watermark in public repo..."
 WATERMARK_TAG="repo-sync/watermark/private-to-public"
 
 # Get the actual commit SHA on the public repo (after push).
-PUBLIC_HEAD_SHA=$(gh api "/repos/${PUBLIC_REPO}/git/ref/heads/${PUBLIC_DEFAULT_BRANCH}" \
+PUBLIC_HEAD_SHA=$(gh api "/repos/${PUBLIC_REPO}/git/ref/heads/${DEFAULT_BRANCH}" \
   --jq '.object.sha')
 
 # Create or update the watermark tag.

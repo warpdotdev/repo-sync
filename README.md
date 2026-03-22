@@ -57,14 +57,17 @@ the bootstrap script creates the initial public repo from the private repo:
 ./scripts/bootstrap.sh \
   --private-repo warpdotdev/warp-internal \
   --public-repo warpdotdev/warp-public \
-  --public-default-branch main \
   --token "$GITHUB_TOKEN"
 ```
 
 this:
+- queries the private repo's default branch and uses it for the public repo (both must match)
 - generates a clean snapshot of the private repo at `HEAD` (stripping all `private/` dirs and `!repo-sync` marker regions)
 - pushes the snapshot as the initial commit to the public repo
+- checks that the public repo has no existing commits (refuses to overwrite)
 - sets watermark tags in both repos so the sync workflows know where to start
+
+the token must have `contents:write` and `pull_requests:write` on both repos.  you can generate one by creating a GitHub App installation token (recommended) or using a fine-grained PAT for one-time use.
 
 ### step 2: add the CI validation action (private repo)
 
@@ -111,7 +114,6 @@ jobs:
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
       peer_repo: warpdotdev/warp-public     # the other repo
-      peer_default_branch: main
       source_is_private: true               # false for the public repo's copy
     secrets:
       auth_token: ${{ needs.auth.outputs.token }}
@@ -122,7 +124,6 @@ jobs:
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
       peer_repo: warpdotdev/warp-public
-      peer_default_branch: main
       source_is_private: true
     secrets:
       auth_token: ${{ needs.auth.outputs.token }}
@@ -135,7 +136,6 @@ jobs:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
       peer_repo: warpdotdev/warp-public
-      peer_default_branch: main
       source_is_private: true
     secrets:
       auth_token: ${{ needs.auth.outputs.token }}
@@ -186,6 +186,11 @@ src/repo_sync/            # python package
   workflows/              # workflow orchestration logic
 tests/                    # pytest test suite
 ```
+
+## known limitations
+
+- **both repos must use the same default branch** (e.g., both use `main`).  the bootstrap script enforces this, and the sync workflows assume it.
+- **symlinks are not supported.**  any symlink in the repo will cause the stripping tool to error.  this is a fail-closed safety measure -- symlinks could potentially bypass `private/` directory exclusion.  the CI validation action also checks for this.
 
 ## documentation
 

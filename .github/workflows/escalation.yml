@@ -27,10 +27,6 @@ on:
         description: "Counterpart repo (needed for stuck-stack restack dispatch)."
         required: true
         type: string
-      peer_default_branch:
-        description: "Default branch of the peer repo."
-        required: true
-        type: string
       source_is_private:
         description: "If true, source repo is private."
         required: true
@@ -108,7 +104,6 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
                   gh workflow run restack.yml \
                     -f pr_number="${PR_NUMBER}" \
                     -f peer_repo="${{ inputs.peer_repo }}" \
-                    -f peer_default_branch="${{ inputs.peer_default_branch }}" \
                     -f source_is_private="${{ inputs.source_is_private }}" \
                     -f escalate_to="${ESCALATE_TO}" \
                     2>/dev/null || echo "Warning: could not dispatch restack for PR #${PR_NUMBER}."
