@@ -66,7 +66,7 @@ def restack_pr(
 
     if not result.success:
         # Rebase failed -- likely conflicts.
-        conflicting = _get_conflicting_files(git)
+        conflicting = git.conflicting_files()
         git.rebase_abort()
         return RestackOutcome(
             result=RestackResult.CONFLICT,
@@ -104,8 +104,3 @@ def restack_after_conflict_resolution(
     """
     git.push(remote, pr_branch, force=True)
     gh.update_pr_base(pr_number, default_branch)
-
-
-def _get_conflicting_files(git: GitOps) -> list[str]:
-    """Get the list of files with merge conflicts."""
-    return git.conflicting_files()

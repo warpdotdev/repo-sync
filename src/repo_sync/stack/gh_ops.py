@@ -214,20 +214,24 @@ class GhOps:
         )
 
     def get_pr_for_commit(self, sha: str) -> PullRequest | None:
-        """Find the PR that merged a given commit into the default branch.
+        """Find the merged PR that introduced a commit into the default branch.
 
         Uses the GitHub commits/{sha}/pulls API for an exact commit-level
         lookup, avoiding false-positive text matches from gh pr list --search.
+        Filters for merged PRs to avoid picking up open/closed PRs that happen
+        to include the same commit.
         """
-        output = self._run(
-            [
-                "api",
-                f"repos/{self.repo}/commits/{sha}/pulls",
-                "--jq",
-                ".[0]",
-            ],
-            check=False,
-        )
+        try:
+            output = self._run(
+                [
+                    "api",
+                    f"repos/{self.repo}/commits/{sha}/pulls",
+                    "--jq",
+                    '[.[] | select(.merged_at != null)] | .[0]',
+                ],
+            )
+        except subprocess.CalledProcessError:
+            return None
         if not output or output == "null":
             return None
         pr = json.loads(output)
@@ -239,7 +243,7 @@ class GhOps:
             body=pr.get("body") or "",
             url=pr["html_url"],
             state=pr["state"],
-            merged=pr.get("merged_at") is not None,
+            merged=True,
         )
 
     def get_pr_merger(self, pr_number: int) -> str | None:
@@ -303,8 +307,11 @@ class GhOps:
         # URL-encode the branch name to handle slashes in sync branch names
         # (e.g. repo-sync/private-to-public/abc123).
         encoded_branch = quote(branch, safe="")
-        output = self._run(
-            ["api", f"repos/{self.repo}/branches/{encoded_branch}"],
-            check=False,
-        )
-        return bool(output and output != "null")
+        try:
+            self._run(
+                ["api", f"repos/{self.repo}/branches/{encoded_branch}"],
+                check=True,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
