@@ -116,6 +116,8 @@ class TestRestackPr:
         )
 
         assert outcome.result == RestackResult.CONFLICT
+        assert outcome.conflicting_files is not None
+        assert "shared.txt" in outcome.conflicting_files
         # Auto-merge and base update should NOT be called on conflict.
         gh.update_pr_base.assert_not_called()
         gh.enable_auto_merge.assert_not_called()

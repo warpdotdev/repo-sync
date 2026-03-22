@@ -81,6 +81,12 @@ class TestParseOrigin:
         result = parse_origin(text)
         assert result is None
 
+    def test_empty_sha_is_rejected(self) -> None:
+        """A trailer with an empty SHA (trailing @) is skipped."""
+        text = "Repo-Sync-Origin: org/repo@"
+        result = parse_origin(text)
+        assert result is None
+
     def test_repo_with_nested_slashes(self) -> None:
         """Repo name with slashes (owner/repo) is parsed correctly."""
         text = "Repo-Sync-Origin: org/sub/repo@sha999"

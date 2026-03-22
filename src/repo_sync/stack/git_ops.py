@@ -58,14 +58,9 @@ class GitOps:
         return self._run(["rev-parse", "--short", ref]).stdout
 
     def branch_exists(self, branch: str) -> bool:
-        """Check if a branch exists locally or as a remote ref."""
+        """Check if a ref resolves locally (branch, tag, or other local ref)."""
         result = self._run(["rev-parse", "--verify", branch], check=False)
         return result.success
-
-    def remote_branch_exists(self, remote: str, branch: str) -> bool:
-        """Check if a remote branch exists via ls-remote."""
-        result = self._run(["ls-remote", "--heads", remote, branch])
-        return bool(result.stdout.strip())
 
     def create_branch(self, branch: str, start_point: str) -> None:
         """Create a new branch at the given start point."""

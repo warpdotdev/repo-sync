@@ -55,7 +55,7 @@ def parse_origin(text: str) -> SyncOrigin | None:
             # Value format: <repo>@<sha>.  The repo may contain slashes
             # (e.g. "warpdotdev/warp-internal"), so we split on the last "@".
             at_idx = value.rfind("@")
-            if at_idx > 0:
+            if at_idx > 0 and at_idx < len(value) - 1:
                 last_match = SyncOrigin(
                     repo=value[:at_idx], sha=value[at_idx + 1 :]
                 )

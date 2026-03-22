@@ -10,6 +10,7 @@ Covers VALIDATION.md stacked PR management and idempotency cases:
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -226,8 +227,6 @@ class TestCreateStackBranch:
         sha_c = make_commit(source_git, "c.txt", "c", "commit C")
 
         # C should have all three files.
-        import os
-
         assert os.path.exists(os.path.join(source_git.repo_dir, "a.txt"))
         assert os.path.exists(os.path.join(source_git.repo_dir, "b.txt"))
         assert os.path.exists(os.path.join(source_git.repo_dir, "c.txt"))

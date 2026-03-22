@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 from dataclasses import dataclass
+from urllib.parse import quote
 
 
 @dataclass
@@ -84,7 +85,7 @@ class GhOps:
             head_branch=pr["headRefName"],
             base_branch=pr["baseRefName"],
             title=pr["title"],
-            body=pr.get("body", ""),
+            body=pr.get("body") or "",
             url=pr["url"],
             state=pr["state"],
             auto_merge_enabled=pr.get("autoMergeRequest") is not None,
@@ -136,7 +137,7 @@ class GhOps:
             head_branch=pr["headRefName"],
             base_branch=pr["baseRefName"],
             title=pr["title"],
-            body=pr.get("body", ""),
+            body=pr.get("body") or "",
             url=pr["url"],
             state=pr["state"],
         )
@@ -235,7 +236,7 @@ class GhOps:
             head_branch=pr["head"]["ref"],
             base_branch=pr["base"]["ref"],
             title=pr["title"],
-            body=pr.get("body", ""),
+            body=pr.get("body") or "",
             url=pr["html_url"],
             state=pr["state"],
             merged=pr.get("merged_at") is not None,
@@ -289,7 +290,7 @@ class GhOps:
                         head_branch=pr["headRefName"],
                         base_branch=pr["baseRefName"],
                         title=pr["title"],
-                        body=pr.get("body", ""),
+                        body=pr.get("body") or "",
                         url=pr["url"],
                         state=pr["state"],
                         auto_merge_enabled=(pr.get("autoMergeRequest") is not None),
@@ -299,8 +300,11 @@ class GhOps:
 
     def branch_exists_on_remote(self, branch: str) -> bool:
         """Check if a branch exists on the remote via the GitHub API."""
+        # URL-encode the branch name to handle slashes in sync branch names
+        # (e.g. repo-sync/private-to-public/abc123).
+        encoded_branch = quote(branch, safe="")
         output = self._run(
-            ["api", f"repos/{self.repo}/branches/{branch}"],
+            ["api", f"repos/{self.repo}/branches/{encoded_branch}"],
             check=False,
         )
         return bool(output and output != "null")
