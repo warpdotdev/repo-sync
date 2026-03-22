@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 
@@ -35,8 +36,6 @@ class GhOps:
         env_additions: dict[str, str] = {}
         if self.token:
             env_additions["GH_TOKEN"] = self.token
-        import os
-
         env = {**os.environ, **env_additions}
         result = subprocess.run(
             ["gh", *args],
@@ -54,7 +53,12 @@ class GhOps:
         return result.stdout.strip()
 
     def pr_exists(self, head_branch: str) -> PullRequest | None:
-        """Check if a PR exists for the given head branch. Returns it or None."""
+        """Check if an open PR exists for the given head branch. Returns it or None.
+
+        Only checks open PRs.  If a PR was manually closed (not merged), this
+        returns None and a new sync PR will be created, which is the intended
+        behavior -- re-creating a manually-closed sync PR is correct.
+        """
         output = self._run(
             [
                 "pr",
@@ -193,39 +197,32 @@ class GhOps:
         )
 
     def get_pr_for_commit(self, sha: str) -> PullRequest | None:
-        """Find the PR that merged a given commit into the default branch."""
+        """Find the PR that merged a given commit into the default branch.
+
+        Uses the GitHub commits/{sha}/pulls API for an exact commit-level
+        lookup, avoiding false-positive text matches from gh pr list --search.
+        """
         output = self._run(
             [
-                "pr",
-                "list",
-                "--repo",
-                self.repo,
-                "--search",
-                sha,
-                "--state",
-                "merged",
-                "--json",
-                "number,headRefName,baseRefName,title,body,url,state,mergedBy",
-                "--limit",
-                "1",
+                "api",
+                f"repos/{self.repo}/commits/{sha}/pulls",
+                "--jq",
+                ".[0]",
             ],
             check=False,
         )
-        if not output:
+        if not output or output == "null":
             return None
-        prs = json.loads(output)
-        if not prs:
-            return None
-        pr = prs[0]
+        pr = json.loads(output)
         return PullRequest(
             number=pr["number"],
-            head_branch=pr["headRefName"],
-            base_branch=pr["baseRefName"],
+            head_branch=pr["head"]["ref"],
+            base_branch=pr["base"]["ref"],
             title=pr["title"],
             body=pr.get("body", ""),
-            url=pr["url"],
+            url=pr["html_url"],
             state=pr["state"],
-            merged=True,
+            merged=pr.get("merged_at") is not None,
         )
 
     def get_pr_merger(self, pr_number: int) -> str | None:
@@ -287,13 +284,8 @@ class GhOps:
 
     def branch_exists_on_remote(self, branch: str) -> bool:
         """Check if a branch exists on the remote via the GitHub API."""
-        result = subprocess.run(
-            [
-                "gh",
-                "api",
-                f"repos/{self.repo}/branches/{branch}",
-            ],
-            capture_output=True,
-            text=True,
+        output = self._run(
+            ["api", f"repos/{self.repo}/branches/{branch}"],
+            check=False,
         )
-        return result.returncode == 0
+        return bool(output and output != "null")

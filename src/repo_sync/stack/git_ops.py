@@ -142,7 +142,13 @@ class GitOps:
 
     def conflicts_exist(self) -> bool:
         """Check if there are unmerged paths (conflict markers)."""
+        return bool(self.conflicting_files())
+
+    def conflicting_files(self) -> list[str]:
+        """Return the list of files with unresolved merge conflicts."""
         result = self._run(
             ["diff", "--name-only", "--diff-filter=U"], check=False
         )
-        return bool(result.stdout.strip())
+        if result.stdout.strip():
+            return result.stdout.strip().splitlines()
+        return []

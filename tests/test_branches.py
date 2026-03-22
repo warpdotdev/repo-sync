@@ -104,6 +104,7 @@ class TestCheckIdempotency:
         git.branch_exists.return_value = False
 
         gh = MagicMock(spec=GhOps)
+        gh.branch_exists_on_remote.return_value = False
         gh.pr_exists.return_value = PullRequest(
             number=42,
             head_branch="repo-sync/private-to-public/abc123",
@@ -121,12 +122,32 @@ class TestCheckIdempotency:
         assert result.existing_pr is not None
         assert result.existing_pr.number == 42
 
+    def test_remote_branch_exists_but_no_pr(self) -> None:
+        """If the branch exists on the remote but no PR, idempotency returns True.
+
+        Covers the gap where the branch was pushed but the workflow crashed
+        before creating a PR.
+        """
+        git = MagicMock(spec=GitOps)
+        git.branch_exists.return_value = False
+
+        gh = MagicMock(spec=GhOps)
+        gh.branch_exists_on_remote.return_value = True
+        gh.pr_exists.return_value = None
+
+        result = check_idempotency(
+            git, gh, "repo-sync/private-to-public/abc123"
+        )
+        assert result.already_exists is True
+        assert result.existing_pr is None
+
     def test_nothing_exists(self) -> None:
         """If neither branch nor PR exists, idempotency returns False."""
         git = MagicMock(spec=GitOps)
         git.branch_exists.return_value = False
 
         gh = MagicMock(spec=GhOps)
+        gh.branch_exists_on_remote.return_value = False
         gh.pr_exists.return_value = None
 
         result = check_idempotency(

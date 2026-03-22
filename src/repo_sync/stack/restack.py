@@ -110,9 +110,4 @@ def restack_after_conflict_resolution(
 
 def _get_conflicting_files(git: GitOps) -> list[str]:
     """Get the list of files with merge conflicts."""
-    result = git._run(
-        ["diff", "--name-only", "--diff-filter=U"], check=False
-    )
-    if result.stdout:
-        return result.stdout.splitlines()
-    return []
+    return git.conflicting_files()
