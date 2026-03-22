@@ -1,0 +1,113 @@
+# Example: consuming repo workflow for repo-sync.
+#
+# Copy this file to .github/workflows/repo-sync.yml in your consuming repo
+# and adjust the configuration values below.
+#
+# Prerequisites for the consuming repo:
+#   - A GitHub App installed on both repos with contents:write, pull_requests:write,
+#     and metadata:read permissions.
+#   - The App's ID and private key stored as repository secrets (REPO_SYNC_APP_ID,
+#     REPO_SYNC_APP_PRIVATE_KEY).
+#   - Auto-merge enabled as a repo-level setting.
+#   - Squash merge configured to preserve the PR description in the commit message.
+#   - Branch protection rules on repo-sync/* branches (only the sync workflow's
+#     token can create/push to them).
+
+name: repo-sync
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed]
+    branches: [main]
+  schedule:
+    # Run escalation checks every 15 minutes.
+    - cron: "*/15 * * * *"
+
+# -------------------------------------------------------------------------
+# Configuration — adjust these for your repo pair.
+# -------------------------------------------------------------------------
+env:
+  # Set to "true" if this is the private repo, "false" if this is the public repo.
+  SOURCE_IS_PRIVATE: "true"
+  # The counterpart repo.
+  PEER_REPO: "warpdotdev/warp-public"
+  # The default branch of the counterpart repo.
+  PEER_DEFAULT_BRANCH: "main"
+  # GitHub team or user to escalate to on timeout.
+  ESCALATE_TO: "@oncall-client-primary"
+  # Duration before escalation.
+  ESCALATE_AFTER: "1h"
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Generate a short-lived GitHub App installation token.
+  # This is shared by all jobs below.
+  # -----------------------------------------------------------------------
+  auth:
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.token.outputs.token }}
+    steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REPO_SYNC_APP_ID }}
+          private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+          # Grant access to both repos.
+          repositories: ${{ github.event.repository.name }},${{ env.PEER_REPO }}
+
+  # -----------------------------------------------------------------------
+  # Sync creation: triggered on push to default branch.
+  # Creates stacked sync PRs in the peer repo.
+  # -----------------------------------------------------------------------
+  sync:
+    needs: auth
+    if: github.event_name == 'push'
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    with:
+      peer_repo: ${{ env.PEER_REPO }}
+      peer_default_branch: ${{ env.PEER_DEFAULT_BRANCH }}
+      source_is_private: ${{ env.SOURCE_IS_PRIVATE == 'true' }}
+      escalate_to: ${{ env.ESCALATE_TO }}
+      # Optional: Slack webhook for stripping error notifications.
+      # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}
+
+  # -----------------------------------------------------------------------
+  # Restack: triggered when a sync PR is merged (pull_request closed+merged
+  # on repo-sync/ branches).
+  # Updates the watermark, rebases the next PR in the stack, and enables
+  # auto-merge or assigns a reviewer.
+  # -----------------------------------------------------------------------
+  restack:
+    needs: auth
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
+    with:
+      peer_repo: ${{ env.PEER_REPO }}
+      peer_default_branch: ${{ env.PEER_DEFAULT_BRANCH }}
+      source_is_private: ${{ env.SOURCE_IS_PRIVATE == 'true' }}
+      escalate_to: ${{ env.ESCALATE_TO }}
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}
+
+  # -----------------------------------------------------------------------
+  # Escalation cron: runs on schedule.
+  # Checks for timeouts, CI failures, and stuck stacks.
+  # -----------------------------------------------------------------------
+  escalation:
+    needs: auth
+    if: github.event_name == 'schedule'
+    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
+    with:
+      escalate_to: ${{ env.ESCALATE_TO }}
+      escalate_after: ${{ env.ESCALATE_AFTER }}
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}

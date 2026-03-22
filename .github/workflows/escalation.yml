@@ -1,0 +1,228 @@
+# Reusable workflow: escalation cron.
+# Triggered by a consuming repo on a cron schedule (e.g. every 15 minutes).
+#
+# Performs three checks on all open sync PRs:
+# 1. Timeout escalation: if a Repo-Sync-Assigned trailer has exceeded the
+#    configured timeout, request review from the escalation team.
+# 2. CI failure detection: if a PR has auto-merge enabled but CI has failed,
+#    disable auto-merge, assign a reviewer, and start the escalation clock.
+# 3. Stuck stack recovery: if a PR's base branch no longer exists (the PR
+#    below it was merged and its branch deleted), dispatch the restack workflow.
+
+name: escalation
+
+on:
+  workflow_call:
+    inputs:
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      escalate_after:
+        description: "Duration before escalation (e.g. 5m, 1h, 30m)."
+        required: true
+        type: string
+    secrets:
+      auth_token:
+        description: "GitHub App installation token with cross-repo push and PR permissions."
+        required: true
+
+jobs:
+  escalation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.auth_token }}
+      ESCALATE_TO: ${{ inputs.escalate_to }}
+      ESCALATE_AFTER: ${{ inputs.escalate_after }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.auth_token }}
+
+      # ---------------------------------------------------------------
+      # Find all open sync PRs (head branch starts with repo-sync/).
+      # ---------------------------------------------------------------
+      - name: List open sync PRs
+        id: list_prs
+        run: |
+          gh pr list \
+            --state open \
+            --json number,headRefName,baseRefName,body,autoMergeRequest \
+            --jq '[.[] | select(.headRefName | startswith("repo-sync/"))]' \
+            > /tmp/sync_prs.json
+
+          COUNT=$(jq 'length' /tmp/sync_prs.json)
+          echo "Found ${COUNT} open sync PR(s)."
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Exit early if no sync PRs
+        if: steps.list_prs.outputs.count == '0'
+        run: echo "No open sync PRs. Nothing to do."
+
+      # ---------------------------------------------------------------
+      # Parse the escalate_after duration into seconds.
+      # ---------------------------------------------------------------
+      - name: Parse escalation timeout
+        if: steps.list_prs.outputs.count != '0'
+        id: timeout
+        run: |
+          DURATION="$ESCALATE_AFTER"
+          # Parse duration string (e.g. 5m, 1h, 30m, 2h30m) into seconds.
+          SECONDS=0
+
+          # Extract hours.
+          HOURS=$(echo "$DURATION" | grep -oE '[0-9]+h' | grep -oE '[0-9]+' || true)
+          if [ -n "$HOURS" ]; then
+            SECONDS=$((SECONDS + HOURS * 3600))
+          fi
+
+          # Extract minutes.
+          MINUTES=$(echo "$DURATION" | grep -oE '[0-9]+m' | grep -oE '[0-9]+' || true)
+          if [ -n "$MINUTES" ]; then
+            SECONDS=$((SECONDS + MINUTES * 60))
+          fi
+
+          if [ "$SECONDS" -eq 0 ]; then
+            echo "::error::Could not parse escalate_after duration: ${DURATION}."
+            exit 1
+          fi
+
+          echo "timeout_seconds=${SECONDS}" >> "$GITHUB_OUTPUT"
+          echo "Escalation timeout: ${SECONDS} seconds."
+
+      # ---------------------------------------------------------------
+      # Check each open sync PR for the three conditions.
+      # ---------------------------------------------------------------
+      - name: Process sync PRs
+        if: steps.list_prs.outputs.count != '0'
+        env:
+          TIMEOUT_SECONDS: ${{ steps.timeout.outputs.timeout_seconds }}
+        run: |
+          set -euo pipefail
+          NOW_EPOCH=$(date -u +%s)
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+
+          jq -c '.[]' /tmp/sync_prs.json | while IFS= read -r PR_JSON; do
+            PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+            HEAD_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
+            BASE_BRANCH=$(echo "$PR_JSON" | jq -r '.baseRefName')
+            PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+            AUTO_MERGE=$(echo "$PR_JSON" | jq -r '.autoMergeRequest // empty')
+
+            echo "=== PR #${PR_NUMBER} (${HEAD_BRANCH}, base: ${BASE_BRANCH}) ==="
+
+            # -----------------------------------------------------------
+            # Check 1: Timeout escalation.
+            # If the PR has a Repo-Sync-Assigned trailer and the timestamp
+            # exceeds the configured timeout, escalate.
+            # -----------------------------------------------------------
+            ASSIGNED_LINE=$(echo "$PR_BODY" | grep '^Repo-Sync-Assigned:' | tail -n1 || true)
+            if [ -n "$ASSIGNED_LINE" ]; then
+              # Parse timestamp from "Repo-Sync-Assigned: <user>@<timestamp>".
+              ASSIGNED_TIMESTAMP=$(echo "$ASSIGNED_LINE" | sed 's/^Repo-Sync-Assigned: *[^@]*@//')
+
+              if [ -n "$ASSIGNED_TIMESTAMP" ]; then
+                # Convert ISO-8601 timestamp to epoch seconds.
+                ASSIGNED_EPOCH=$(date -u -d "$ASSIGNED_TIMESTAMP" +%s 2>/dev/null || \
+                  date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ASSIGNED_TIMESTAMP" +%s 2>/dev/null || echo "0")
+
+                ELAPSED=$((NOW_EPOCH - ASSIGNED_EPOCH))
+                if [ "$ELAPSED" -gt "$TIMEOUT_SECONDS" ]; then
+                  echo "PR #${PR_NUMBER}: escalation timeout exceeded (${ELAPSED}s > ${TIMEOUT_SECONDS}s). Escalating."
+                  gh pr edit "${PR_NUMBER}" --add-reviewer "${ESCALATE_TO}" 2>/dev/null || true
+                else
+                  echo "PR #${PR_NUMBER}: within escalation window (${ELAPSED}s <= ${TIMEOUT_SECONDS}s)."
+                fi
+              fi
+            fi
+
+            # -----------------------------------------------------------
+            # Check 2: CI failure detection.
+            # If auto-merge is enabled but required status checks have
+            # failed, disable auto-merge and assign a reviewer.
+            # -----------------------------------------------------------
+            if [ -n "$AUTO_MERGE" ]; then
+              # Check the status of required checks on the PR's head commit.
+              HEAD_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq '.headRefOid')
+
+              # Get combined status.  Look for any failing required checks.
+              CHECK_STATUS=$(gh api "/repos/${{ github.repository }}/commits/${HEAD_SHA}/status" \
+                --jq '.state' 2>/dev/null || echo "unknown")
+
+              # Also check GitHub Actions check runs.
+              FAILING_CHECKS=$(gh api "/repos/${{ github.repository }}/commits/${HEAD_SHA}/check-runs" \
+                --jq '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out")] | length' \
+                2>/dev/null || echo "0")
+
+              if [ "$CHECK_STATUS" = "failure" ] || [ "$FAILING_CHECKS" -gt 0 ]; then
+                echo "PR #${PR_NUMBER}: CI has failed with auto-merge enabled. Disabling auto-merge and assigning."
+
+                # Disable auto-merge.
+                gh pr merge "${PR_NUMBER}" --disable-auto 2>/dev/null || true
+
+                # Determine reviewer from Repo-Sync-Origin trailer.
+                SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
+                  | sed 's/^Repo-Sync-Origin: *//')
+                SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
+                SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
+
+                REVIEWER=""
+                if [ -n "$SOURCE_SHA" ] && [ -n "$SOURCE_REPO" ]; then
+                  SOURCE_PR_JSON=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}/pulls" \
+                    --header "Accept: application/vnd.github+json" 2>/dev/null || echo "[]")
+                  REVIEWER=$(echo "$SOURCE_PR_JSON" | jq -r '
+                    [.[] | select(.merged_at != null)] | first | .merged_by.login // empty')
+                  if [ -z "$REVIEWER" ]; then
+                    REVIEWER=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}" \
+                      --jq '.author.login // empty' 2>/dev/null || true)
+                  fi
+                fi
+                if [ -z "$REVIEWER" ]; then
+                  REVIEWER="${ESCALATE_TO}"
+                fi
+
+                gh pr edit "${PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+
+                # Append Repo-Sync-Assigned trailer to start the escalation clock.
+                TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
+                gh pr edit "${PR_NUMBER}" \
+                  --body "${CURRENT_BODY}
+Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+
+                echo "Assigned PR #${PR_NUMBER} to ${REVIEWER} (CI failure)."
+              else
+                echo "PR #${PR_NUMBER}: auto-merge enabled, CI passing or pending."
+              fi
+            fi
+
+            # -----------------------------------------------------------
+            # Check 3: Stuck stack recovery.
+            # If the PR's base branch no longer exists (the PR below was
+            # merged and its branch auto-deleted), dispatch the restack
+            # workflow.
+            # -----------------------------------------------------------
+            if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+              # Check if the base branch still exists.
+              BASE_EXISTS=$(gh api "/repos/${{ github.repository }}/git/ref/heads/${BASE_BRANCH}" \
+                --jq '.ref' 2>/dev/null || true)
+
+              if [ -z "$BASE_EXISTS" ]; then
+                echo "PR #${PR_NUMBER}: base branch '${BASE_BRANCH}' no longer exists. Dispatching restack."
+
+                # Dispatch the restack workflow for stuck stack recovery.
+                gh workflow run restack.yml \
+                  -f pr_number="${PR_NUMBER}" \
+                  2>/dev/null || echo "Warning: could not dispatch restack workflow for PR #${PR_NUMBER}."
+              fi
+            fi
+
+          done
+
+          echo "Escalation check complete."

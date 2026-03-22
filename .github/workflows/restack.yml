@@ -1,0 +1,388 @@
+# Reusable workflow: restack after sync PR merge.
+# Triggered by a consuming repo on pull_request closed+merged for repo-sync/
+# branches, or via workflow_dispatch for stuck stack recovery.
+#
+# Implements: watermark update, rebase --onto for squash merge compatibility,
+# auto-merge enable on new stack bottom, CI failure -> human assignment,
+# conflict -> agent invocation with mandatory human sign-off.
+
+name: restack
+
+on:
+  workflow_call:
+    inputs:
+      peer_repo:
+        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      peer_default_branch:
+        description: "Default branch of the peer repo (e.g. main)."
+        required: true
+        type: string
+      source_is_private:
+        description: "If true, this repo is private (determines watermark direction)."
+        required: true
+        type: boolean
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+    secrets:
+      auth_token:
+        description: "GitHub App installation token with cross-repo push and PR permissions."
+        required: true
+
+# Serialize ALL restack operations to prevent concurrent rebases.
+concurrency:
+  group: repo-sync-restack-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    # Only run if the PR was actually merged (not just closed) and was a sync
+    # branch — or if dispatched manually for stuck stack recovery.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.auth_token }}
+      PEER_REPO: ${{ inputs.peer_repo }}
+      PEER_DEFAULT_BRANCH: ${{ inputs.peer_default_branch }}
+      SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
+      ESCALATE_TO: ${{ inputs.escalate_to }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.auth_token }}
+
+      - name: Checkout repo-sync tooling
+        uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: v1
+          path: .repo-sync
+          token: ${{ secrets.auth_token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repo-sync tools
+        run: pip install -e .repo-sync
+
+      # ---------------------------------------------------------------
+      # Determine direction and watermark tag location.
+      # ---------------------------------------------------------------
+      - name: Set direction variables
+        id: direction
+        run: |
+          if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
+            echo "label=private-to-public" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=repo-sync/private-to-public" >> "$GITHUB_OUTPUT"
+            # Watermark lives in the peer (public) repo for private-to-public.
+            echo "watermark_repo=${PEER_REPO}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=public-to-private" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=repo-sync/public-to-private" >> "$GITHUB_OUTPUT"
+            # Watermark lives in the peer (private) repo for public-to-private.
+            echo "watermark_repo=${PEER_REPO}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------------------------------------------------------------
+      # Identify the merged PR.  For workflow_dispatch (stuck stack
+      # recovery), the PR number may be passed as an input or we detect
+      # it from the stuck PR search.
+      # ---------------------------------------------------------------
+      - name: Identify merged PR
+        id: merged_pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # For stuck stack recovery, the escalation cron passes the PR
+            # number via client_payload or we detect the stuck PR.
+            # Fallback: find the most recently merged sync PR.
+            MERGED_PR_NUMBER="${{ github.event.inputs.pr_number || '' }}"
+            if [ -z "$MERGED_PR_NUMBER" ]; then
+              echo "::warning::No PR number provided for workflow_dispatch. Looking for stuck PRs."
+              echo "pr_number=" >> "$GITHUB_OUTPUT"
+              echo "skip_watermark=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            MERGED_PR_NUMBER="${{ github.event.pull_request.number }}"
+          fi
+
+          echo "pr_number=${MERGED_PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "skip_watermark=false" >> "$GITHUB_OUTPUT"
+
+          # Get the merge commit SHA.
+          MERGE_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
+          echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
+
+          # Get the head branch of the merged PR (to use as the old base for
+          # rebase --onto).
+          HEAD_BRANCH=$(gh pr view "$MERGED_PR_NUMBER" --json headRefName --jq '.headRefName')
+          echo "merged_head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head branch ${HEAD_BRANCH}."
+
+      # ---------------------------------------------------------------
+      # Update the watermark tag to point to the merge commit.
+      # ---------------------------------------------------------------
+      - name: Update watermark
+        if: steps.merged_pr.outputs.skip_watermark != 'true'
+        run: |
+          DIRECTION="${{ steps.direction.outputs.label }}"
+          WATERMARK_TAG="repo-sync/watermark/${DIRECTION}"
+          WATERMARK_REPO="${{ steps.direction.outputs.watermark_repo }}"
+          MERGE_SHA="${{ steps.merged_pr.outputs.merge_sha }}"
+
+          echo "Updating watermark tag '${WATERMARK_TAG}' in ${WATERMARK_REPO} to ${MERGE_SHA}."
+
+          # Try to update existing tag; create if it doesn't exist.
+          REF_EXISTS=$(gh api "/repos/${WATERMARK_REPO}/git/ref/tags/${WATERMARK_TAG}" \
+            --jq '.ref' 2>/dev/null || true)
+
+          if [ -n "$REF_EXISTS" ]; then
+            gh api -X PATCH "/repos/${WATERMARK_REPO}/git/refs/tags/${WATERMARK_TAG}" \
+              -f sha="${MERGE_SHA}" \
+              -F force=true
+          else
+            gh api -X POST "/repos/${WATERMARK_REPO}/git/refs" \
+              -f ref="refs/tags/${WATERMARK_TAG}" \
+              -f sha="${MERGE_SHA}"
+          fi
+
+          echo "Watermark updated."
+
+      # ---------------------------------------------------------------
+      # Find the next PR in the stack (the one whose base was the merged
+      # PR's branch).
+      # ---------------------------------------------------------------
+      - name: Find next PR in stack
+        id: next_pr
+        run: |
+          BRANCH_PREFIX="${{ steps.direction.outputs.branch_prefix }}"
+          MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+
+          # For workflow_dispatch (stuck stack recovery), find any open sync PR
+          # whose base branch no longer exists.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            NEXT_PR=$(gh pr list \
+              --state open \
+              --json number,headRefName,baseRefName \
+              --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}/\"))] | sort_by(.number) | first | .number // empty")
+
+            if [ -z "$NEXT_PR" ]; then
+              echo "No open sync PRs found for stuck stack recovery."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            # Find the PR whose base branch is the just-merged branch.
+            NEXT_PR=$(gh pr list \
+              --state open \
+              --base "${MERGED_BRANCH}" \
+              --json number,headRefName \
+              --jq '.[0].number // empty')
+
+            if [ -z "$NEXT_PR" ]; then
+              echo "No next PR in stack. Stack is fully merged."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          NEXT_HEAD=$(gh pr view "$NEXT_PR" --json headRefName --jq '.headRefName')
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "number=${NEXT_PR}" >> "$GITHUB_OUTPUT"
+          echo "head_branch=${NEXT_HEAD}" >> "$GITHUB_OUTPUT"
+          echo "Next PR in stack: #${NEXT_PR} (branch: ${NEXT_HEAD})."
+
+      # ---------------------------------------------------------------
+      # Rebase the next PR onto the updated default branch using
+      # git rebase --onto.  This handles squash merge correctly by
+      # dropping the already-merged commits.
+      # ---------------------------------------------------------------
+      - name: Rebase next PR
+        if: steps.next_pr.outputs.found == 'true'
+        id: rebase
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
+          NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+
+          # Make sure we have the latest refs.
+          git fetch origin
+
+          # Rebase --onto: replay only the next PR's commits onto the updated
+          # default branch, dropping the merged PR's commits.
+          #
+          # git rebase --onto <new-base> <old-base> <branch>
+          # - new-base: origin/<default-branch> (the updated main after squash merge).
+          # - old-base: origin/<merged-branch> tip (the commits to drop).
+          # - branch: the next PR's branch.
+          REBASE_SUCCEEDED="true"
+          git checkout "${NEXT_BRANCH}"
+
+          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "origin/${MERGED_BRANCH}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
+            echo "Rebase has conflicts."
+            REBASE_SUCCEEDED="false"
+          fi
+
+          echo "rebase_succeeded=${REBASE_SUCCEEDED}" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # Handle rebase conflicts: invoke the conflict resolution agent.
+      # ---------------------------------------------------------------
+      - name: Resolve conflicts via agent
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false'
+        id: conflict_resolution
+        run: |
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+          NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
+
+          CONFLICTING_FILES=$(git diff --name-only --diff-filter=U)
+          echo "Conflicting files: ${CONFLICTING_FILES}"
+
+          AGENT_SUCCEEDED="false"
+
+          # Invoke the conflict resolution agent.
+          # Expected interface: oz agent run --skill warpdotdev/repo-sync:conflict-resolution
+          # The agent resolves conflicts in the working tree, stages them, and
+          # continues the rebase.
+          if oz agent run \
+            --skill warpdotdev/repo-sync:conflict-resolution \
+            --context "Conflicting files during restack of PR #${NEXT_PR_NUMBER}: ${CONFLICTING_FILES}" \
+            2>/dev/null; then
+            echo "Agent resolved rebase conflicts."
+            AGENT_SUCCEEDED="true"
+          else
+            echo "Agent failed to resolve rebase conflicts."
+            # Abort the rebase so we're in a clean state.
+            git rebase --abort 2>/dev/null || true
+          fi
+
+          echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # Push the rebased branch and update the PR's base.
+      # ---------------------------------------------------------------
+      - name: Push rebased branch
+        if: steps.next_pr.outputs.found == 'true' && (steps.rebase.outputs.rebase_succeeded == 'true' || steps.conflict_resolution.outputs.agent_succeeded == 'true')
+        run: |
+          NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
+          git push origin "${NEXT_BRANCH}" --force-with-lease
+
+      - name: Update PR base branch
+        if: steps.next_pr.outputs.found == 'true' && (steps.rebase.outputs.rebase_succeeded == 'true' || steps.conflict_resolution.outputs.agent_succeeded == 'true')
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+
+          # Update the PR's base to the default branch (it was previously
+          # based on the now-merged branch).
+          gh pr edit "${NEXT_PR_NUMBER}" --base "${DEFAULT_BRANCH}"
+          echo "Updated PR #${NEXT_PR_NUMBER} base to ${DEFAULT_BRANCH}."
+
+      # ---------------------------------------------------------------
+      # Enable auto-merge or assign reviewer based on outcome.
+      # ---------------------------------------------------------------
+      - name: Enable auto-merge (clean rebase, no conflicts)
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'true'
+        run: |
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+
+          # Enable auto-merge (squash).  This waits for required status checks
+          # to pass before merging.
+          gh pr merge "${NEXT_PR_NUMBER}" --auto --squash \
+            || echo "Warning: could not enable auto-merge on PR #${NEXT_PR_NUMBER}."
+
+      - name: Assign reviewer after agent conflict resolution
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
+        run: |
+          # Agent-resolved conflicts always require human sign-off.
+          # Auto-merge is NOT enabled on conflict-resolved PRs.
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+
+          # Determine the reviewer: the merger of the source PR, or fallback.
+          # Parse the Repo-Sync-Origin trailer from the PR to find the source commit.
+          PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
+          SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
+            | sed 's/^Repo-Sync-Origin: *//')
+          SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
+          SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
+
+          REVIEWER=""
+          if [ -n "$SOURCE_SHA" ] && [ -n "$SOURCE_REPO" ]; then
+            SOURCE_PR_JSON=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}/pulls" \
+              --header "Accept: application/vnd.github+json" 2>/dev/null || echo "[]")
+            REVIEWER=$(echo "$SOURCE_PR_JSON" | jq -r '
+              [.[] | select(.merged_at != null)] | first | .merged_by.login // empty')
+            if [ -z "$REVIEWER" ]; then
+              REVIEWER=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}" \
+                --jq '.author.login // empty' 2>/dev/null || true)
+            fi
+          fi
+          if [ -z "$REVIEWER" ]; then
+            REVIEWER="${ESCALATE_TO}"
+          fi
+
+          gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+
+          # Append Repo-Sync-Assigned trailer for escalation tracking.
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
+          gh pr edit "${NEXT_PR_NUMBER}" \
+            --body "${CURRENT_BODY}
+Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+
+          echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent-resolved conflict)."
+
+      - name: Assign reviewer after agent failure
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded != 'true'
+        run: |
+          # Agent failed — assign to human without a proposed resolution.
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+
+          # Determine the reviewer using the same logic.
+          PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
+          SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
+            | sed 's/^Repo-Sync-Origin: *//')
+          SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
+          SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
+
+          REVIEWER=""
+          if [ -n "$SOURCE_SHA" ] && [ -n "$SOURCE_REPO" ]; then
+            SOURCE_PR_JSON=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}/pulls" \
+              --header "Accept: application/vnd.github+json" 2>/dev/null || echo "[]")
+            REVIEWER=$(echo "$SOURCE_PR_JSON" | jq -r '
+              [.[] | select(.merged_at != null)] | first | .merged_by.login // empty')
+            if [ -z "$REVIEWER" ]; then
+              REVIEWER=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}" \
+                --jq '.author.login // empty' 2>/dev/null || true)
+            fi
+          fi
+          if [ -z "$REVIEWER" ]; then
+            REVIEWER="${ESCALATE_TO}"
+          fi
+
+          gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+
+          # Append Repo-Sync-Assigned trailer for escalation tracking.
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
+          gh pr edit "${NEXT_PR_NUMBER}" \
+            --body "${CURRENT_BODY}
+Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+
+          echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent failed, needs manual resolution)."
