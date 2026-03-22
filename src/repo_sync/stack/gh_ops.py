@@ -53,29 +53,30 @@ class GhOps:
             )
         return result.stdout.strip()
 
-    def pr_exists(self, head_branch: str) -> PullRequest | None:
-        """Check if an open PR exists for the given head branch. Returns it or None.
+    def pr_exists(
+        self, head_branch: str, any_state: bool = False
+    ) -> PullRequest | None:
+        """Check if a PR exists for the given head branch. Returns it or None.
 
-        Only checks open PRs.  If a PR was manually closed (not merged), this
-        returns None and a new sync PR will be created, which is the intended
-        behavior -- re-creating a manually-closed sync PR is correct.
+        By default, only checks open PRs.  Pass any_state=True to also find
+        merged or closed PRs (used by the idempotency guard to detect PRs that
+        were previously created per TECH-DESIGN.md line 37).
         """
-        output = self._run(
-            [
-                "pr",
-                "list",
-                "--repo",
-                self.repo,
-                "--head",
-                head_branch,
-                "--state",
-                "open",
-                "--json",
-                "number,headRefName,baseRefName,title,body,url,state,autoMergeRequest",
-                "--limit",
-                "1",
-            ]
-        )
+        args = [
+            "pr",
+            "list",
+            "--repo",
+            self.repo,
+            "--head",
+            head_branch,
+            "--state",
+            "all" if any_state else "open",
+            "--json",
+            "number,headRefName,baseRefName,title,body,url,state,autoMergeRequest",
+            "--limit",
+            "1",
+        ]
+        output = self._run(args)
         prs = json.loads(output)
         if not prs:
             return None
@@ -269,38 +270,49 @@ class GhOps:
         return None
 
     def list_open_sync_prs(self) -> list[PullRequest]:
-        """List all open PRs with repo-sync/ head branches."""
-        output = self._run(
-            [
-                "pr",
-                "list",
-                "--repo",
-                self.repo,
-                "--state",
-                "open",
-                "--json",
-                "number,headRefName,baseRefName,title,body,url,state,autoMergeRequest",
-                "--limit",
-                "100",
-            ]
-        )
-        all_prs = json.loads(output)
-        result = []
-        for pr in all_prs:
-            if pr["headRefName"].startswith("repo-sync/"):
-                result.append(
-                    PullRequest(
-                        number=pr["number"],
-                        head_branch=pr["headRefName"],
-                        base_branch=pr["baseRefName"],
-                        title=pr["title"],
-                        body=pr.get("body") or "",
-                        url=pr["url"],
-                        state=pr["state"],
-                        auto_merge_enabled=(pr.get("autoMergeRequest") is not None),
+        """List all open PRs with repo-sync/ head branches.
+
+        Paginates through all open PRs to avoid missing sync PRs in repos
+        with many open PRs.
+        """
+        page_size = 100
+        all_sync_prs: list[PullRequest] = []
+        page = 1
+
+        while True:
+            output = self._run(
+                [
+                    "api",
+                    f"repos/{self.repo}/pulls",
+                    "-X", "GET",
+                    "-f", "state=open",
+                    "-f", f"per_page={page_size}",
+                    "-f", f"page={page}",
+                ]
+            )
+            prs = json.loads(output)
+            if not prs:
+                break
+            for pr in prs:
+                head_branch = pr["head"]["ref"]
+                if head_branch.startswith("repo-sync/"):
+                    all_sync_prs.append(
+                        PullRequest(
+                            number=pr["number"],
+                            head_branch=head_branch,
+                            base_branch=pr["base"]["ref"],
+                            title=pr["title"],
+                            body=pr.get("body") or "",
+                            url=pr["html_url"],
+                            state=pr["state"],
+                            auto_merge_enabled=pr.get("auto_merge") is not None,
+                        )
                     )
-                )
-        return result
+            if len(prs) < page_size:
+                break
+            page += 1
+
+        return all_sync_prs
 
     def branch_exists_on_remote(self, branch: str) -> bool:
         """Check if a branch exists on the remote via the GitHub API."""

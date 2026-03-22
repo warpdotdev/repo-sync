@@ -64,8 +64,9 @@ def check_idempotency(
             already_exists=True, existing_pr=existing_pr
         )
 
-    # Check if a PR was previously created with this head branch.
-    existing_pr = gh.pr_exists(branch)
+    # Check if a PR was previously created with this head branch (any state,
+    # including merged -- covers the crash-between-merge-and-watermark-update case).
+    existing_pr = gh.pr_exists(branch, any_state=True)
     if existing_pr is not None:
         return IdempotencyResult(
             already_exists=True, existing_pr=existing_pr

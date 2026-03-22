@@ -26,6 +26,7 @@ class RestackResult(Enum):
 
     SUCCESS = "success"
     CONFLICT = "conflict"
+    ERROR = "error"
 
 
 @dataclass
@@ -65,13 +66,16 @@ def restack_pr(
     )
 
     if not result.success:
-        # Rebase failed -- likely conflicts.
+        # Rebase failed -- check if it's a merge conflict or another error.
         conflicting = git.conflicting_files()
         git.rebase_abort()
-        return RestackOutcome(
-            result=RestackResult.CONFLICT,
-            conflicting_files=conflicting,
-        )
+        if conflicting:
+            return RestackOutcome(
+                result=RestackResult.CONFLICT,
+                conflicting_files=conflicting,
+            )
+        # Non-conflict failure (e.g. invalid ref, dirty working tree).
+        return RestackOutcome(result=RestackResult.ERROR)
 
     # Rebase succeeded -- force-push and update the PR.
     git.push(remote, next_pr_branch, force=True)
