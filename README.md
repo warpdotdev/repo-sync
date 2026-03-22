@@ -103,33 +103,29 @@ on:
   schedule:
     - cron: "*/15 * * * *"      # triggers escalation checks
 
-jobs:
-  auth:
-    # generate a GitHub App installation token
-    # (see examples/consuming-repo-sync.yml for full details)
+# store the GitHub App installation token as REPO_SYNC_TOKEN in repo secrets.
+# each job only runs when its trigger condition matches, so no wasted runs.
 
+jobs:
   sync:
-    needs: auth
     if: github.event_name == 'push'
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
       peer_repo: warpdotdev/warp-public     # the other repo
       source_is_private: true               # false for the public repo's copy
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
   restack:
-    needs: auth
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
       peer_repo: warpdotdev/warp-public
       source_is_private: true
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
   escalation:
-    needs: auth
     if: github.event_name == 'schedule'
     uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
     with:
@@ -138,7 +134,7 @@ jobs:
       peer_repo: warpdotdev/warp-public
       source_is_private: true
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 ```
 
 the public repo gets the same workflow, but with `source_is_private: false` and `peer_repo` pointing to the private repo.

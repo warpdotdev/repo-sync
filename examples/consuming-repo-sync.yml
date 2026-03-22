@@ -6,8 +6,8 @@
 # Prerequisites for the consuming repo:
 #   - A GitHub App installed on both repos with contents:write, pull_requests:write,
 #     and metadata:read permissions.
-#   - The App's ID and private key stored as repository secrets (REPO_SYNC_APP_ID,
-#     REPO_SYNC_APP_PRIVATE_KEY).
+#   - A GitHub App installation token stored as a repository secret (REPO_SYNC_TOKEN).
+#     Generate it using the App's ID and private key, or use a fine-grained PAT.
 #   - Auto-merge enabled as a repo-level setting.
 #   - Squash merge configured to preserve the PR description in the commit message.
 #   - Branch protection rules on repo-sync/* branches (only the sync workflow's
@@ -33,28 +33,10 @@ on:
 
 jobs:
   # -----------------------------------------------------------------------
-  # Generate a short-lived GitHub App installation token.
-  # This is shared by all jobs below.
-  # -----------------------------------------------------------------------
-  auth:
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.token.outputs.token }}
-    steps:
-      - name: Generate installation token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.REPO_SYNC_APP_ID }}
-          private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }},warp-public
-
-  # -----------------------------------------------------------------------
   # Sync creation: triggered on push to default branch.
+  # Each job generates its own token so no shared auth job runs unnecessarily.
   # -----------------------------------------------------------------------
   sync:
-    needs: auth
     if: github.event_name == 'push'
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
@@ -63,13 +45,12 @@ jobs:
       escalate_to: "@oncall-client-primary"
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
   # -----------------------------------------------------------------------
   # Restack: triggered when a sync PR is merged.
   # -----------------------------------------------------------------------
   restack:
-    needs: auth
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true &&
@@ -80,13 +61,12 @@ jobs:
       source_is_private: true
       escalate_to: "@oncall-client-primary"
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
   # -----------------------------------------------------------------------
   # Escalation cron: runs on schedule.
   # -----------------------------------------------------------------------
   escalation:
-    needs: auth
     if: github.event_name == 'schedule'
     uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
     with:
@@ -95,4 +75,4 @@ jobs:
       peer_repo: warpdotdev/warp-public
       source_is_private: true
     secrets:
-      auth_token: ${{ needs.auth.outputs.token }}
+      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
