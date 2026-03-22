@@ -113,7 +113,18 @@ echo "Initial commit: ${INITIAL_COMMIT_SHA}"
 
 # Push to the public repo.
 git remote add origin "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git"
-git push -u origin "${PUBLIC_DEFAULT_BRANCH}" --force
+
+# Safety check: refuse to force-push if the public repo already has commits.
+EXISTING_COMMITS=$(gh api "/repos/${PUBLIC_REPO}/commits?per_page=1" --jq 'length' 2>/dev/null || echo "0")
+if [ "$EXISTING_COMMITS" -gt 0 ]; then
+  echo "Error: public repo ${PUBLIC_REPO} already has commits.  Bootstrap is only for empty repos." >&2
+  echo "If you want to overwrite, delete the repo's content first." >&2
+  popd > /dev/null
+  rm -rf "$SNAPSHOT_DIR" "$WORK_DIR"
+  exit 1
+fi
+
+git push -u origin "${PUBLIC_DEFAULT_BRANCH}"
 echo "Pushed to ${PUBLIC_REPO}/${PUBLIC_DEFAULT_BRANCH}."
 
 popd > /dev/null

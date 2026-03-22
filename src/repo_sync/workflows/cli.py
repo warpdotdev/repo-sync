@@ -180,25 +180,11 @@ def _check_ci_failed(gh: GhOps, pr: PullRequest) -> bool:
     Queries the GitHub check-runs API for the PR's head commit and returns
     True if any check run has a conclusion of 'failure' or 'timed_out'.
     """
-    # Get the head commit SHA for the PR.
-    head_sha_output = gh._run(
-        ["pr", "view", str(pr.number), "--repo", gh.repo,
-         "--json", "headRefOid", "--jq", ".headRefOid"],
-        check=False,
-    )
-    if not head_sha_output:
+    head_sha = gh.get_pr_head_sha(pr.number)
+    if not head_sha:
         return False
 
-    # Query check runs for the head commit.
-    check_output = gh._run(
-        ["api", f"repos/{gh.repo}/commits/{head_sha_output}/check-runs",
-         "--jq", "[.check_runs[] | select(.conclusion == \"failure\" or .conclusion == \"timed_out\")] | length"],
-        check=False,
-    )
-    try:
-        return int(check_output) > 0
-    except (ValueError, TypeError):
-        return False
+    return gh.get_check_failures(head_sha) > 0
 
 
 def cmd_escalation_check(args: argparse.Namespace) -> None:

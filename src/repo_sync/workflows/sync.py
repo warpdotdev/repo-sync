@@ -61,21 +61,11 @@ def read_watermark_from_peer(
     Returns the parsed SyncOrigin, or None if the tag does not exist.
     """
     tag_name = watermark_tag_name(direction)
-    # Fetch the tag SHA from the peer repo.
-    tag_sha = peer_gh._run(
-        ["api", f"repos/{peer_gh.repo}/git/ref/tags/{tag_name}",
-         "--jq", ".object.sha"],
-        check=False,
-    )
+    tag_sha = peer_gh.get_tag_sha(tag_name)
     if not tag_sha:
         return None
 
-    # Read the commit message to extract the Repo-Sync-Origin trailer.
-    commit_msg = peer_gh._run(
-        ["api", f"repos/{peer_gh.repo}/git/commits/{tag_sha}",
-         "--jq", ".message"],
-        check=False,
-    )
+    commit_msg = peer_gh.get_commit_message(tag_sha)
     if not commit_msg:
         return None
 
@@ -177,11 +167,7 @@ def build_public_to_private_description(
 
 def get_commit_author(gh: GhOps, sha: str) -> str | None:
     """Look up the GitHub login of a commit's author via the API."""
-    output = gh._run(
-        ["api", f"repos/{gh.repo}/commits/{sha}", "--jq", ".author.login"],
-        check=False,
-    )
-    return output if output else None
+    return gh.get_commit_author_login(sha)
 
 
 def determine_sync_reviewer(

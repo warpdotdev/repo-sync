@@ -61,15 +61,13 @@ jobs:
           [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
           python -m repo_sync.workflows.cli detect-direction $PRIVATE_FLAG
 
-      - name: Infinite loop check
-        id: loop_check
-        run: |
-          python -m repo_sync.workflows.cli loop-check \
-            --repo-dir . --gh-repo "${{ github.repository }}" \
-            --trigger-sha "${{ github.sha }}"
+      # No early-exit loop check here.  enumerate_unsynced_commits already
+      # filters out sync-originated commits per-commit.  An early exit on
+      # the trigger SHA would incorrectly skip unsynced commits when a
+      # sync-originated commit replaces a normal commit in the concurrency
+      # group's pending slot.
 
       - name: Read watermark
-        if: steps.loop_check.outputs.is_sync != 'true'
         id: watermark
         run: |
           python -m repo_sync.workflows.cli read-watermark \
@@ -77,7 +75,6 @@ jobs:
             --direction "${{ steps.direction.outputs.direction }}"
 
       - name: List unsynced commits
-        if: steps.loop_check.outputs.is_sync != 'true'
         id: unsynced
         run: |
           python -m repo_sync.workflows.cli list-unsynced \
@@ -87,7 +84,7 @@ jobs:
             --watermark-sha "${{ steps.watermark.outputs.last_synced_sha }}"
 
       - name: Checkout peer repo
-        if: steps.loop_check.outputs.is_sync != 'true' && steps.unsynced.outputs.count != '0'
+        if: steps.unsynced.outputs.count != '0'
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.peer_repo }}
@@ -97,7 +94,7 @@ jobs:
           token: ${{ secrets.auth_token }}
 
       - name: Find existing stack top
-        if: steps.loop_check.outputs.is_sync != 'true' && steps.unsynced.outputs.count != '0'
+        if: steps.unsynced.outputs.count != '0'
         id: stack_top
         run: |
           python -m repo_sync.workflows.cli find-stack-top \
@@ -108,7 +105,7 @@ jobs:
       # in shell; all decision logic (descriptions, reviewer, idempotency) is
       # delegated to Python CLI subcommands.
       - name: Create sync PRs
-        if: steps.loop_check.outputs.is_sync != 'true' && steps.unsynced.outputs.count != '0'
+        if: steps.unsynced.outputs.count != '0'
         env:
           ESCALATE_TO: ${{ inputs.escalate_to }}
           SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}

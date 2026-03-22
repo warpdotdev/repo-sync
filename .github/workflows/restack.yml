@@ -11,16 +11,31 @@ name: restack
 on:
   workflow_call:
     inputs:
-      # Note: pr_number is only used by workflow_dispatch (stuck stack recovery).
-      pr_number:
-        description: "PR number to restack (used by stuck stack recovery dispatch)."
+      peer_repo:
+        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      peer_default_branch:
+        description: "Default branch of the peer repo (e.g. main)."
+        required: true
+        type: string
+      source_is_private:
+        description: "If true, this repo is private (determines watermark direction)."
+        required: true
+        type: boolean
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
         required: false
         type: string
-        default: ""
+        default: "@oncall-client-primary"
+    secrets:
+      auth_token:
+        description: "GitHub App installation token with cross-repo push and PR permissions."
+        required: true
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "PR number to restack (used by stuck stack recovery dispatch)."
+        description: "Stuck PR number to restack (used by stuck stack recovery dispatch)."
         required: false
         type: string
         default: ""
@@ -109,26 +124,32 @@ jobs:
       # recovery), the PR number may be passed as an input or we detect
       # it from the stuck PR search.
       # ---------------------------------------------------------------
-      - name: Identify merged PR
+      - name: Identify PR context
         id: merged_pr
         run: |
+          # Stuck-stack recovery: the dispatched PR is the STUCK (open) PR
+          # that needs restacking, NOT a merged PR.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # For stuck stack recovery, the escalation cron passes the PR
-            # number via client_payload or we detect the stuck PR.
-            # Fallback: find the most recently merged sync PR.
-            MERGED_PR_NUMBER="${{ github.event.inputs.pr_number || '' }}"
-            if [ -z "$MERGED_PR_NUMBER" ]; then
-              echo "::warning::No PR number provided for workflow_dispatch. Looking for stuck PRs."
-              echo "pr_number=" >> "$GITHUB_OUTPUT"
-              echo "skip_watermark=true" >> "$GITHUB_OUTPUT"
-              exit 0
+            STUCK_PR="${{ github.event.inputs.pr_number || '' }}"
+            if [ -z "$STUCK_PR" ]; then
+              echo "::error::No PR number provided for workflow_dispatch."
+              exit 1
             fi
-          else
-            MERGED_PR_NUMBER="${{ github.event.pull_request.number }}"
+            echo "mode=stuck_recovery" >> "$GITHUB_OUTPUT"
+            echo "stuck_pr=${STUCK_PR}" >> "$GITHUB_OUTPUT"
+            # Get the stuck PR's head branch and current base.
+            STUCK_HEAD=$(gh pr view "$STUCK_PR" --json headRefName --jq '.headRefName')
+            STUCK_BASE=$(gh pr view "$STUCK_PR" --json baseRefName --jq '.baseRefName')
+            echo "stuck_head_branch=${STUCK_HEAD}" >> "$GITHUB_OUTPUT"
+            echo "stuck_base_branch=${STUCK_BASE}" >> "$GITHUB_OUTPUT"
+            echo "Stuck PR #${STUCK_PR}: head=${STUCK_HEAD}, base=${STUCK_BASE}."
+            exit 0
           fi
 
+          # Normal path: a sync PR was just merged.
+          MERGED_PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "mode=normal" >> "$GITHUB_OUTPUT"
           echo "pr_number=${MERGED_PR_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "skip_watermark=false" >> "$GITHUB_OUTPUT"
 
           # Get the merge commit SHA.
           MERGE_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
@@ -141,15 +162,15 @@ jobs:
           HEAD_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json headRefOid --jq '.headRefOid')
           echo "merged_head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
           echo "merged_head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head branch ${HEAD_BRANCH}, head SHA ${HEAD_SHA}."
+          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head ${HEAD_BRANCH} (${HEAD_SHA})."
 
       # ---------------------------------------------------------------
       # Update the watermark tag to point to the merge commit.
       # ---------------------------------------------------------------
       - name: Update watermark
-        if: steps.merged_pr.outputs.skip_watermark != 'true'
+        if: steps.merged_pr.outputs.mode == 'normal'
         run: |
-          DIRECTION="${{ steps.direction.outputs.label }}"
+          DIRECTION="${{ steps.direction.outputs.direction }}"
           WATERMARK_TAG="repo-sync/watermark/${DIRECTION}"
           WATERMARK_REPO="${{ steps.direction.outputs.watermark_repo }}"
           MERGE_SHA="${{ steps.merged_pr.outputs.merge_sha }}"
@@ -179,25 +200,15 @@ jobs:
       - name: Find next PR in stack
         id: next_pr
         run: |
-          BRANCH_PREFIX="${{ steps.direction.outputs.branch_prefix }}"
-          MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
 
-          # For workflow_dispatch (stuck stack recovery), find any open sync PR
-          # whose base branch no longer exists.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            NEXT_PR=$(gh pr list \
-              --state open \
-              --json number,headRefName,baseRefName \
-              --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}/\"))] | sort_by(.number) | first | .number // empty")
-
-            if [ -z "$NEXT_PR" ]; then
-              echo "No open sync PRs found for stuck stack recovery."
-              echo "found=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
+            # Stuck-stack recovery: the dispatched PR IS the next PR to restack.
+            NEXT_PR="${{ steps.merged_pr.outputs.stuck_pr }}"
+            NEXT_HEAD="${{ steps.merged_pr.outputs.stuck_head_branch }}"
           else
-            # Find the PR whose base branch is the just-merged branch.
+            # Normal path: find the PR whose base branch is the just-merged branch.
+            MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
             NEXT_PR=$(gh pr list \
               --state open \
               --base "${MERGED_BRANCH}" \
@@ -209,9 +220,9 @@ jobs:
               echo "found=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            NEXT_HEAD=$(gh pr view "$NEXT_PR" --json headRefName --jq '.headRefName')
           fi
 
-          NEXT_HEAD=$(gh pr view "$NEXT_PR" --json headRefName --jq '.headRefName')
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "number=${NEXT_PR}" >> "$GITHUB_OUTPUT"
           echo "head_branch=${NEXT_HEAD}" >> "$GITHUB_OUTPUT"
@@ -227,25 +238,27 @@ jobs:
         id: rebase
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          MERGED_HEAD_SHA="${{ steps.merged_pr.outputs.merged_head_sha }}"
           NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
           # Make sure we have the latest refs.
           git fetch origin
 
-          # Rebase --onto: replay only the next PR's commits onto the updated
-          # default branch, dropping the merged PR's commits.
-          #
-          # git rebase --onto <new-base> <old-base> <branch>
-          # - new-base: origin/<default-branch> (the updated main after squash merge).
-          # - old-base: the merged PR's head commit SHA (not branch ref, since
-          #   the branch may have been auto-deleted after merge).
-          # - branch: the next PR's branch.
           REBASE_SUCCEEDED="true"
           git checkout "${NEXT_BRANCH}"
 
-          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${MERGED_HEAD_SHA}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
+          if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
+            # Stuck-stack recovery: the PR's base branch no longer exists.
+            # Rebase the PR's commits onto the current default branch.
+            # Use the merge-base of the PR branch and origin/default as the
+            # old base, so only the PR's own commits are replayed.
+            OLD_BASE=$(git merge-base "origin/${DEFAULT_BRANCH}" "${NEXT_BRANCH}")
+          else
+            # Normal path: use the merged PR's head commit SHA as old base.
+            OLD_BASE="${{ steps.merged_pr.outputs.merged_head_sha }}"
+          fi
+
+          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
             echo "Rebase has conflicts."
             REBASE_SUCCEEDED="false"
           fi

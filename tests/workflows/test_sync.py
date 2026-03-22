@@ -12,8 +12,11 @@ from repo_sync.workflows.sync import (
     build_public_to_private_description,
     check_commit_idempotency,
     determine_direction,
+    determine_sync_reviewer,
     enumerate_unsynced_commits,
     find_existing_stack_top,
+    get_commit_author,
+    read_watermark_from_peer,
 )
 
 
@@ -227,3 +230,101 @@ class TestBuildPublicToPrivateDescription:
             commit_body="",
         )
         assert "Synced from warp-public:" in desc.body
+
+
+class TestReadWatermarkFromPeer:
+    """Tests for read_watermark_from_peer."""
+
+    def test_returns_none_when_tag_missing(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_tag_sha.return_value = None
+
+        result = read_watermark_from_peer(gh, "private-to-public")
+        assert result is None
+
+    def test_returns_none_when_commit_message_missing(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_tag_sha.return_value = "abc123"
+        gh.get_commit_message.return_value = None
+
+        result = read_watermark_from_peer(gh, "private-to-public")
+        assert result is None
+
+    def test_returns_none_when_no_trailer_in_message(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_tag_sha.return_value = "abc123"
+        gh.get_commit_message.return_value = "Just a regular commit message."
+
+        result = read_watermark_from_peer(gh, "private-to-public")
+        assert result is None
+
+    def test_parses_trailer_correctly(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_tag_sha.return_value = "watermark_sha"
+        gh.get_commit_message.return_value = (
+            "repo-sync: sync from private\n\n"
+            "Repo-Sync-Origin: warpdotdev/warp-internal@deadbeef1234"
+        )
+
+        result = read_watermark_from_peer(gh, "private-to-public")
+        assert result is not None
+        assert result.repo == "warpdotdev/warp-internal"
+        assert result.sha == "deadbeef1234"
+
+    def test_uses_correct_tag_name(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_tag_sha.return_value = None
+
+        read_watermark_from_peer(gh, "public-to-private")
+        gh.get_tag_sha.assert_called_once_with(
+            "repo-sync/watermark/public-to-private"
+        )
+
+
+class TestGetCommitAuthor:
+    """Tests for get_commit_author."""
+
+    def test_returns_author_login(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_commit_author_login.return_value = "octocat"
+
+        result = get_commit_author(gh, "abc123")
+        assert result == "octocat"
+
+    def test_returns_none_when_not_found(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_commit_author_login.return_value = None
+
+        result = get_commit_author(gh, "abc123")
+        assert result is None
+
+
+class TestDetermineSyncReviewer:
+    """Tests for determine_sync_reviewer."""
+
+    def test_uses_pr_merger_when_available(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = _make_pr(number=42)
+        gh.get_pr_merger.return_value = "merger-user"
+
+        result = determine_sync_reviewer(gh, "abc123", "fallback-team")
+        assert result == "merger-user"
+
+    def test_uses_commit_author_for_direct_push(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = None
+        gh.get_commit_author_login.return_value = "author-user"
+        # determine_reviewer is called with commit_author="author-user".
+        gh.get_pr_merger.return_value = None
+
+        result = determine_sync_reviewer(gh, "abc123", "fallback-team")
+        assert result == "author-user"
+
+    def test_falls_back_to_team(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = None
+        gh.get_commit_author_login.return_value = None
+        gh.get_pr_merger.return_value = None
+
+        result = determine_sync_reviewer(gh, "abc123", "fallback-team")
+        assert result == "fallback-team"
