@@ -67,6 +67,8 @@ class GhOps:
                 self.repo,
                 "--head",
                 head_branch,
+                "--state",
+                "open",
                 "--json",
                 "number,headRefName,baseRefName,title,body,url,state,autoMergeRequest",
                 "--limit",
@@ -95,8 +97,12 @@ class GhOps:
         title: str,
         body: str,
     ) -> PullRequest:
-        """Create a pull request and return its metadata."""
-        output = self._run(
+        """Create a pull request and return its metadata.
+
+        gh pr create does not support --json, so we capture the PR URL from
+        stdout and then fetch structured data via gh pr view.
+        """
+        pr_url = self._run(
             [
                 "pr",
                 "create",
@@ -110,6 +116,16 @@ class GhOps:
                 title,
                 "--body",
                 body,
+            ]
+        )
+        # gh pr create prints the new PR's URL to stdout.
+        output = self._run(
+            [
+                "pr",
+                "view",
+                pr_url,
+                "--repo",
+                self.repo,
                 "--json",
                 "number,headRefName,baseRefName,title,body,url,state",
             ]
@@ -276,8 +292,7 @@ class GhOps:
                         body=pr.get("body", ""),
                         url=pr["url"],
                         state=pr["state"],
-                        auto_merge_enabled=pr.get("autoMergeRequest")
-                        is not None,
+                        auto_merge_enabled=(pr.get("autoMergeRequest") is not None),
                     )
                 )
         return result

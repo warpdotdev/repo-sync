@@ -99,9 +99,7 @@ class TestCreateSyncPr:
 
         # Verify create_pr was called with body containing trailer.
         create_args = gh.create_pr.call_args
-        assert "Repo-Sync-Origin: org/repo@abc123" in create_args.kwargs.get(
-            "body", create_args[1].get("body", "")
-        ) or "Repo-Sync-Origin: org/repo@abc123" in str(create_args)
+        assert "Repo-Sync-Origin: org/repo@abc123" in create_args.kwargs["body"]
 
     def test_auto_merge_on_bottom_pr(self) -> None:
         """Auto-merge is enabled when the PR's base is the default branch."""

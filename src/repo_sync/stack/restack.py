@@ -56,10 +56,8 @@ def restack_pr(
 
     Returns a RestackOutcome indicating success or conflict.
     """
-    # Ensure we are on the next PR's branch.
-    git.checkout(next_pr_branch)
-
     # Rebase: drop the merged PR's commits and replay only the next PR's.
+    # Note: rebase --onto checks out the target branch automatically.
     result = git.rebase_onto(
         new_base=default_branch,
         old_base=merged_pr_branch_tip,

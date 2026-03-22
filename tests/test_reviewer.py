@@ -96,6 +96,17 @@ class TestDetermineReviewer:
         )
         assert result == "my-custom-team"
 
+    def test_empty_string_author_falls_through_to_fallback(self) -> None:
+        """An empty-string commit_author is treated as absent (falls through to fallback)."""
+        gh = MagicMock(spec=GhOps)
+
+        result = determine_reviewer(
+            gh,
+            source_pr_number=None,
+            commit_author="",
+        )
+        assert result == DEFAULT_FALLBACK_TEAM
+
 
 class TestAssignReviewer:
     """Tests for the assign_reviewer function."""

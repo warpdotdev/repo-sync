@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 
@@ -25,16 +26,18 @@ class GitOps:
 
     def __init__(self, repo_dir: str, env: dict[str, str] | None = None) -> None:
         self.repo_dir = repo_dir
-        self.env = env
+        # Additional environment variables to merge with os.environ.
+        self._env_additions = env or {}
 
     def _run(self, args: list[str], check: bool = True) -> CommandResult:
         """Run a git command and return the result."""
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
         result = subprocess.run(
             ["git", *args],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
-            env=self.env,
+            env=env,
         )
         if check and result.returncode != 0:
             raise subprocess.CalledProcessError(
@@ -83,8 +86,12 @@ class GitOps:
         """Get the full commit message for a ref."""
         return self._run(["log", "-1", "--format=%B", ref]).stdout
 
-    def commit_author(self, ref: str) -> str:
-        """Get the author of a commit (GitHub username-compatible format)."""
+    def commit_author_name(self, ref: str) -> str:
+        """Get the display name of a commit's author (e.g. 'Alice Smith').
+
+        Note: this returns the git author name, NOT a GitHub login.  Callers
+        that need a GitHub login must resolve it separately via the GitHub API.
+        """
         return self._run(["log", "-1", "--format=%an", ref]).stdout
 
     def commit_author_email(self, ref: str) -> str:
