@@ -2,7 +2,39 @@
 
 from __future__ import annotations
 
-from repo_sync.workflows.sync import determine_direction
+from unittest.mock import MagicMock, patch
+
+from repo_sync.stack.branches import IdempotencyResult
+from repo_sync.stack.gh_ops import GhOps, PullRequest
+from repo_sync.stack.git_ops import CommandResult, GitOps
+from repo_sync.stack.trailers import SyncOrigin
+from repo_sync.workflows.sync import (
+    build_public_to_private_description,
+    check_commit_idempotency,
+    determine_direction,
+    enumerate_unsynced_commits,
+    find_existing_stack_top,
+)
+
+
+def _make_pr(
+    number: int = 1,
+    head: str = "repo-sync/private-to-public/abc1234",
+    base: str = "main",
+    title: str = "test",
+    body: str = "",
+    url: str = "https://github.com/test/repo/pull/1",
+) -> PullRequest:
+    """Helper to create a PullRequest for testing."""
+    return PullRequest(
+        number=number,
+        head_branch=head,
+        base_branch=base,
+        title=title,
+        body=body,
+        url=url,
+        state="OPEN",
+    )
 
 
 class TestDetermineDirection:
@@ -13,3 +45,185 @@ class TestDetermineDirection:
 
     def test_public_source(self) -> None:
         assert determine_direction(False) == "public-to-private"
+
+
+class TestEnumerateUnsyncedCommits:
+    """Tests for enumerate_unsynced_commits."""
+
+    def test_no_commits(self) -> None:
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+        git.log_oneline.return_value = []
+
+        result = enumerate_unsynced_commits(
+            git, gh, "private-to-public", "main",
+            SyncOrigin(repo="test/repo", sha="abc123"),
+        )
+        assert result == []
+
+    @patch("repo_sync.workflows.sync.is_sync_originated")
+    def test_filters_sync_originated(self, mock_is_sync: MagicMock) -> None:
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+        git.log_oneline.return_value = ["sha1", "sha2", "sha3"]
+        # sha2 is sync-originated; sha1 and sha3 are not.
+        mock_is_sync.side_effect = [False, True, False]
+
+        result = enumerate_unsynced_commits(
+            git, gh, "private-to-public", "main",
+            SyncOrigin(repo="test/repo", sha="abc123"),
+        )
+        assert result == ["sha1", "sha3"]
+
+    @patch("repo_sync.workflows.sync.is_sync_originated")
+    def test_all_sync_originated(self, mock_is_sync: MagicMock) -> None:
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+        git.log_oneline.return_value = ["sha1", "sha2"]
+        mock_is_sync.return_value = True
+
+        result = enumerate_unsynced_commits(
+            git, gh, "private-to-public", "main",
+            SyncOrigin(repo="test/repo", sha="abc123"),
+        )
+        assert result == []
+
+    @patch("repo_sync.workflows.sync.is_sync_originated")
+    def test_preserves_order(self, mock_is_sync: MagicMock) -> None:
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+        git.log_oneline.return_value = ["oldest", "middle", "newest"]
+        mock_is_sync.return_value = False
+
+        result = enumerate_unsynced_commits(
+            git, gh, "private-to-public", "main",
+            SyncOrigin(repo="test/repo", sha="abc123"),
+        )
+        assert result == ["oldest", "middle", "newest"]
+
+    def test_uses_correct_range_spec(self) -> None:
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+        git.log_oneline.return_value = []
+
+        enumerate_unsynced_commits(
+            git, gh, "private-to-public", "main",
+            SyncOrigin(repo="test/repo", sha="watermark_sha"),
+        )
+        git.log_oneline.assert_called_once_with("watermark_sha..main")
+
+
+class TestFindExistingStackTop:
+    """Tests for find_existing_stack_top."""
+
+    def test_no_open_prs(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.list_open_sync_prs.return_value = []
+
+        result = find_existing_stack_top(gh, "private-to-public")
+        assert result is None
+
+    def test_returns_highest_pr_number(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.list_open_sync_prs.return_value = [
+            _make_pr(number=10, head="repo-sync/private-to-public/aaa1111"),
+            _make_pr(number=12, head="repo-sync/private-to-public/ccc3333"),
+            _make_pr(number=11, head="repo-sync/private-to-public/bbb2222"),
+        ]
+
+        result = find_existing_stack_top(gh, "private-to-public")
+        assert result == "repo-sync/private-to-public/ccc3333"
+
+    def test_filters_by_direction(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.list_open_sync_prs.return_value = [
+            _make_pr(number=10, head="repo-sync/private-to-public/aaa1111"),
+            _make_pr(number=20, head="repo-sync/public-to-private/bbb2222"),
+        ]
+
+        result = find_existing_stack_top(gh, "private-to-public")
+        assert result == "repo-sync/private-to-public/aaa1111"
+
+    def test_no_matching_direction(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.list_open_sync_prs.return_value = [
+            _make_pr(number=10, head="repo-sync/public-to-private/aaa1111"),
+        ]
+
+        result = find_existing_stack_top(gh, "private-to-public")
+        assert result is None
+
+
+class TestCheckCommitIdempotency:
+    """Tests for check_commit_idempotency."""
+
+    @patch("repo_sync.workflows.sync.check_idempotency")
+    def test_already_exists(self, mock_check: MagicMock) -> None:
+        mock_check.return_value = IdempotencyResult(already_exists=True)
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+
+        result = check_commit_idempotency(git, gh, "repo-sync/p2p/abc")
+        assert result is True
+
+    @patch("repo_sync.workflows.sync.check_idempotency")
+    def test_does_not_exist(self, mock_check: MagicMock) -> None:
+        mock_check.return_value = IdempotencyResult(already_exists=False)
+        git = MagicMock(spec=GitOps)
+        gh = MagicMock(spec=GhOps)
+
+        result = check_commit_idempotency(git, gh, "repo-sync/p2p/abc")
+        assert result is False
+
+
+class TestBuildPublicToPrivateDescription:
+    """Tests for build_public_to_private_description."""
+
+    def test_with_source_pr(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = _make_pr(
+            title="Fix bug",
+            body="This fixes a bug.",
+            url="https://github.com/org/public/pull/42",
+        )
+
+        desc = build_public_to_private_description(
+            source_gh=gh,
+            source_repo="org/public",
+            source_sha="abc123",
+            commit_subject="unused",
+            commit_body="unused",
+        )
+        assert desc.title == "Fix bug"
+        assert "Synced from public:" in desc.body
+        assert "https://github.com/org/public/pull/42" in desc.body
+        assert "This fixes a bug." in desc.body
+
+    def test_without_source_pr_falls_back_to_commit(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = None
+
+        desc = build_public_to_private_description(
+            source_gh=gh,
+            source_repo="org/public",
+            source_sha="abc123",
+            commit_subject="Update README",
+            commit_body="Added docs.",
+        )
+        assert desc.title == "Update README"
+        assert "Synced from public:" in desc.body
+        assert "https://github.com/org/public/commit/abc123" in desc.body
+        assert "Added docs." in desc.body
+
+    def test_repo_name_extracted_correctly(self) -> None:
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.return_value = None
+
+        desc = build_public_to_private_description(
+            source_gh=gh,
+            source_repo="warpdotdev/warp-public",
+            source_sha="abc123",
+            commit_subject="test",
+            commit_body="",
+        )
+        assert "Synced from warp-public:" in desc.body

@@ -54,6 +54,13 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync
 
+      - name: Detect direction
+        id: direction
+        run: |
+          PRIVATE_FLAG=""
+          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          python -m repo_sync.workflows.cli detect-direction $PRIVATE_FLAG
+
       - name: Infinite loop check
         id: loop_check
         run: |
@@ -65,20 +72,18 @@ jobs:
         if: steps.loop_check.outputs.is_sync != 'true'
         id: watermark
         run: |
-          DIRECTION=${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}
           python -m repo_sync.workflows.cli read-watermark \
-            --repo-dir . --direction "$DIRECTION"
+            --peer-repo "${PEER_REPO}" \
+            --direction "${{ steps.direction.outputs.direction }}"
 
       - name: List unsynced commits
         if: steps.loop_check.outputs.is_sync != 'true'
         id: unsynced
         run: |
-          DIRECTION=${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}
           python -m repo_sync.workflows.cli list-unsynced \
             --repo-dir . --gh-repo "${{ github.repository }}" \
-            --direction "$DIRECTION" \
+            --direction "${{ steps.direction.outputs.direction }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
-            --watermark-repo "" \
             --watermark-sha "${{ steps.watermark.outputs.last_synced_sha }}"
 
       - name: Checkout peer repo
@@ -95,9 +100,9 @@ jobs:
         if: steps.loop_check.outputs.is_sync != 'true' && steps.unsynced.outputs.count != '0'
         id: stack_top
         run: |
-          DIRECTION=${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}
           python -m repo_sync.workflows.cli find-stack-top \
-            --peer-repo "${PEER_REPO}" --direction "$DIRECTION"
+            --peer-repo "${PEER_REPO}" \
+            --direction "${{ steps.direction.outputs.direction }}"
 
       # Per-commit sync PR creation.  The loop and git/gh side effects remain
       # in shell; all decision logic (descriptions, reviewer, idempotency) is
@@ -111,8 +116,8 @@ jobs:
           STACK_TOP: ${{ steps.stack_top.outputs.stack_top }}
         run: |
           set -euo pipefail
-          DIRECTION=${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}
-          BRANCH_PREFIX="repo-sync/${DIRECTION}"
+          DIRECTION="${{ steps.direction.outputs.direction }}"
+          BRANCH_PREFIX="${{ steps.direction.outputs.branch_prefix }}"
           STACK_BASE_BRANCH="${STACK_TOP:-${PEER_DEFAULT_BRANCH}}"
           IS_STACK_BOTTOM="true"
           [ -n "${STACK_TOP:-}" ] && IS_STACK_BOTTOM="false"
@@ -134,7 +139,7 @@ jobs:
               SNAPSHOT_DIR="/tmp/snapshot-${SHORT_SHA}"
               if ! python -m repo_sync.strip "${SOURCE_SHA}" "${SNAPSHOT_DIR}"; then
                 [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
-                  --data "{\"text\":\"repo-sync: stripping failed for ${SHORT_SHA} in ${SOURCE_REPO}.\"}"\
+                  --data "{\"text\":\"repo-sync: stripping failed for ${SHORT_SHA} in ${SOURCE_REPO}.\"}" \
                   "$SLACK_WEBHOOK_URL" || true
                 exit 1
               fi

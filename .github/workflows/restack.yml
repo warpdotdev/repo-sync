@@ -325,38 +325,24 @@ jobs:
           # Auto-merge is NOT enabled on conflict-resolved PRs.
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          # Determine the reviewer: the merger of the source PR, or fallback.
-          # Parse the Repo-Sync-Origin trailer from the PR to find the source commit.
+          # Parse source info from the PR body to determine the reviewer.
           PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
             | sed 's/^Repo-Sync-Origin: *//')
           SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
           SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
 
-          REVIEWER=""
-          if [ -n "$SOURCE_SHA" ] && [ -n "$SOURCE_REPO" ]; then
-            SOURCE_PR_JSON=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}/pulls" \
-              --header "Accept: application/vnd.github+json" 2>/dev/null || echo "[]")
-            REVIEWER=$(echo "$SOURCE_PR_JSON" | jq -r '
-              [.[] | select(.merged_at != null)] | first | .merged_by.login // empty')
-            if [ -z "$REVIEWER" ]; then
-              REVIEWER=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}" \
-                --jq '.author.login // empty' 2>/dev/null || true)
-            fi
-          fi
-          if [ -z "$REVIEWER" ]; then
-            REVIEWER="${ESCALATE_TO}"
-          fi
+          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
+            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+            --fallback-team "${ESCALATE_TO}")
+          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
 
           gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-
-          # Append Repo-Sync-Assigned trailer for escalation tracking.
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           gh pr edit "${NEXT_PR_NUMBER}" \
             --body "${CURRENT_BODY}
 Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
-
           echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent-resolved conflict)."
 
       - name: Assign reviewer after agent failure
@@ -365,35 +351,21 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
           # Agent failed — assign to human without a proposed resolution.
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          # Determine the reviewer using the same logic.
           PR_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
             | sed 's/^Repo-Sync-Origin: *//')
           SOURCE_REPO=$(echo "$SOURCE_INFO" | cut -d'@' -f1)
           SOURCE_SHA=$(echo "$SOURCE_INFO" | cut -d'@' -f2)
 
-          REVIEWER=""
-          if [ -n "$SOURCE_SHA" ] && [ -n "$SOURCE_REPO" ]; then
-            SOURCE_PR_JSON=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}/pulls" \
-              --header "Accept: application/vnd.github+json" 2>/dev/null || echo "[]")
-            REVIEWER=$(echo "$SOURCE_PR_JSON" | jq -r '
-              [.[] | select(.merged_at != null)] | first | .merged_by.login // empty')
-            if [ -z "$REVIEWER" ]; then
-              REVIEWER=$(gh api "/repos/${SOURCE_REPO}/commits/${SOURCE_SHA}" \
-                --jq '.author.login // empty' 2>/dev/null || true)
-            fi
-          fi
-          if [ -z "$REVIEWER" ]; then
-            REVIEWER="${ESCALATE_TO}"
-          fi
+          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
+            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+            --fallback-team "${ESCALATE_TO}")
+          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
 
           gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-
-          # Append Repo-Sync-Assigned trailer for escalation tracking.
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           gh pr edit "${NEXT_PR_NUMBER}" \
             --body "${CURRENT_BODY}
 Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
-
           echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent failed, needs manual resolution)."

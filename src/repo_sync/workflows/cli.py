@@ -69,14 +69,20 @@ def cmd_loop_check(args: argparse.Namespace) -> None:
 
 
 def cmd_read_watermark(args: argparse.Namespace) -> None:
-    """Read the watermark and output the last-synced source SHA."""
-    git = GitOps(args.repo_dir)
+    """Read the watermark from the peer repo via the GitHub API.
+
+    The watermark tag lives in the peer repo (the target of sync), not the
+    source repo.  We read it via GhOps to avoid needing the peer checked out.
+    """
+    from repo_sync.workflows.sync import read_watermark_from_peer
+
+    gh = GhOps(args.peer_repo, token=os.environ.get("GH_TOKEN"))
     direction = args.direction
 
-    watermark = read_watermark(git, direction)
+    watermark = read_watermark_from_peer(gh, direction)
     if watermark is None:
         print(
-            json.dumps({"error": f"No watermark for direction '{direction}'."}),
+            json.dumps({"error": f"No watermark for direction '{direction}' in {args.peer_repo}."}),
         )
         sys.exit(1)
 
@@ -91,7 +97,7 @@ def cmd_list_unsynced(args: argparse.Namespace) -> None:
     git = GitOps(args.repo_dir)
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
 
-    watermark_origin = SyncOrigin(repo=args.watermark_repo, sha=args.watermark_sha)
+    watermark_origin = SyncOrigin(repo="", sha=args.watermark_sha)
     commits = enumerate_unsynced_commits(
         git, gh, args.direction, args.default_branch, watermark_origin
     )
@@ -168,6 +174,33 @@ def cmd_detect_direction(args: argparse.Namespace) -> None:
     _write_github_output("branch_prefix", f"repo-sync/{direction}")
 
 
+def _check_ci_failed(gh: GhOps, pr: PullRequest) -> bool:
+    """Check if a PR's head commit has failing CI checks.
+
+    Queries the GitHub check-runs API for the PR's head commit and returns
+    True if any check run has a conclusion of 'failure' or 'timed_out'.
+    """
+    # Get the head commit SHA for the PR.
+    head_sha_output = gh._run(
+        ["pr", "view", str(pr.number), "--repo", gh.repo,
+         "--json", "headRefOid", "--jq", ".headRefOid"],
+        check=False,
+    )
+    if not head_sha_output:
+        return False
+
+    # Query check runs for the head commit.
+    check_output = gh._run(
+        ["api", f"repos/{gh.repo}/commits/{head_sha_output}/check-runs",
+         "--jq", "[.check_runs[] | select(.conclusion == \"failure\" or .conclusion == \"timed_out\")] | length"],
+        check=False,
+    )
+    try:
+        return int(check_output) > 0
+    except (ValueError, TypeError):
+        return False
+
+
 def cmd_escalation_check(args: argparse.Namespace) -> None:
     """Run escalation checks on all open sync PRs."""
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
@@ -183,11 +216,8 @@ def cmd_escalation_check(args: argparse.Namespace) -> None:
         if pr.base_branch != args.default_branch:
             base_exists = gh.branch_exists_on_remote(pr.base_branch)
 
-        # Check CI status (the caller provides this via the GH API).
-        # For now, we assume the YAML layer checks CI and passes the result.
-        # In the CLI, we can check it directly.
-        ci_failed = False
-        # TODO: Add CI status check via GH API when integrated.
+        # Check CI status via the GitHub API.
+        ci_failed = _check_ci_failed(gh, pr)
 
         check = evaluate_pr(
             pr=pr,
@@ -228,7 +258,7 @@ def main() -> None:
 
     # read-watermark.
     p = subparsers.add_parser("read-watermark", help="Read the watermark tag.")
-    p.add_argument("--repo-dir", required=True)
+    p.add_argument("--peer-repo", required=True, help="Peer repo (owner/name) where the watermark tag lives.")
     p.add_argument("--direction", required=True)
     p.set_defaults(func=cmd_read_watermark)
 
@@ -238,7 +268,6 @@ def main() -> None:
     p.add_argument("--gh-repo", required=True)
     p.add_argument("--direction", required=True)
     p.add_argument("--default-branch", required=True)
-    p.add_argument("--watermark-repo", required=True)
     p.add_argument("--watermark-sha", required=True)
     p.set_defaults(func=cmd_list_unsynced)
 

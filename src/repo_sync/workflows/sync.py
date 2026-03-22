@@ -12,23 +12,15 @@ library's GitOps/GhOps wrappers, which can be replaced in tests.
 from __future__ import annotations
 
 import logging
-import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-# These imports reference the stack management library built by ws2.
-# During integration, these will be real imports.  For now, we reference the
-# expected interfaces.
-from repo_sync.stack.branches import (
-    check_idempotency,
-    sync_branch_name,
-)
+from repo_sync.stack.branches import check_idempotency
 from repo_sync.stack.gh_ops import GhOps, PullRequest
 from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.loop_detection import is_sync_originated
-from repo_sync.stack.prs import create_sync_pr
-from repo_sync.stack.reviewer import assign_reviewer, determine_reviewer
+from repo_sync.stack.reviewer import determine_reviewer
 from repo_sync.stack.trailers import SyncOrigin, parse_origin
-from repo_sync.stack.watermark import read_watermark
+from repo_sync.stack.watermark import watermark_tag_name
 
 from repo_sync.workflows.descriptions import (
     PRDescription,
@@ -53,29 +45,41 @@ class SyncConfig:
     slack_webhook_url: str = ""
 
 
-@dataclass
-class SyncPlan:
-    """The plan produced by analyzing unsynced commits.
-
-    This separates planning from execution so that tests can verify the plan
-    without needing to execute side effects.
-    """
-
-    # Direction label: 'private-to-public' or 'public-to-private'.
-    direction: str
-    # Unsynced commit SHAs to process, in chronological order (oldest first).
-    unsynced_commits: list[str] = field(default_factory=list)
-    # Commits skipped because a sync branch/PR already exists.
-    skipped_existing: list[str] = field(default_factory=list)
-    # Commits skipped because the diff is empty (internal-only changes).
-    skipped_empty: list[str] = field(default_factory=list)
-    # Whether the triggering commit is itself sync-originated.
-    trigger_is_sync: bool = False
-
-
 def determine_direction(source_is_private: bool) -> str:
     """Return the sync direction label."""
     return "private-to-public" if source_is_private else "public-to-private"
+
+
+def read_watermark_from_peer(
+    peer_gh: GhOps,
+    direction: str,
+) -> SyncOrigin | None:
+    """Read the watermark tag from the peer repo via the GitHub API.
+
+    The watermark tag lives in the peer (target) repo.  This function reads it
+    via the GH CLI API, avoiding the need to have the peer repo checked out.
+    Returns the parsed SyncOrigin, or None if the tag does not exist.
+    """
+    tag_name = watermark_tag_name(direction)
+    # Fetch the tag SHA from the peer repo.
+    tag_sha = peer_gh._run(
+        ["api", f"repos/{peer_gh.repo}/git/ref/tags/{tag_name}",
+         "--jq", ".object.sha"],
+        check=False,
+    )
+    if not tag_sha:
+        return None
+
+    # Read the commit message to extract the Repo-Sync-Origin trailer.
+    commit_msg = peer_gh._run(
+        ["api", f"repos/{peer_gh.repo}/git/commits/{tag_sha}",
+         "--jq", ".message"],
+        check=False,
+    )
+    if not commit_msg:
+        return None
+
+    return parse_origin(commit_msg)
 
 
 def enumerate_unsynced_commits(
@@ -108,45 +112,6 @@ def enumerate_unsynced_commits(
     return result
 
 
-def plan_sync(
-    source_git: GitOps,
-    source_gh: GhOps,
-    peer_gh: GhOps,
-    config: SyncConfig,
-    trigger_sha: str,
-    default_branch: str,
-) -> SyncPlan:
-    """Analyze the current state and produce a sync plan.
-
-    This does not create any branches or PRs -- it only reads state and decides
-    what needs to be done.
-    """
-    direction = determine_direction(config.source_is_private)
-    plan = SyncPlan(direction=direction)
-
-    # Check if the triggering commit is sync-originated.
-    if is_sync_originated(source_git, source_gh, trigger_sha):
-        plan.trigger_is_sync = True
-        return plan
-
-    # Read the watermark from the peer repo to find the last-synced source SHA.
-    # Note: read_watermark operates on a local git repo.  The caller must ensure
-    # the peer repo's watermark tag is fetched or use the GH API.  For the
-    # workflow, we read the watermark via the GH API in the CLI layer and pass
-    # the result here.
-    watermark = read_watermark(source_git, direction)
-    if watermark is None:
-        raise RuntimeError(
-            f"No watermark found for direction '{direction}'. Run bootstrap first."
-        )
-
-    plan.unsynced_commits = enumerate_unsynced_commits(
-        source_git, source_gh, direction, default_branch, watermark
-    )
-
-    return plan
-
-
 def find_existing_stack_top(
     peer_gh: GhOps,
     direction: str,
@@ -163,18 +128,6 @@ def find_existing_stack_top(
     # Sort by PR number (ascending) and take the last one (highest = most recent).
     matching.sort(key=lambda pr: pr.number)
     return matching[-1].head_branch
-
-
-@dataclass
-class CommitSyncResult:
-    """Result of syncing a single commit."""
-
-    sha: str
-    short_sha: str
-    skipped: bool = False
-    skip_reason: str = ""
-    pr: PullRequest | None = None
-    conflict: bool = False
 
 
 def check_commit_idempotency(
@@ -222,6 +175,15 @@ def build_public_to_private_description(
     )
 
 
+def get_commit_author(gh: GhOps, sha: str) -> str | None:
+    """Look up the GitHub login of a commit's author via the API."""
+    output = gh._run(
+        ["api", f"repos/{gh.repo}/commits/{sha}", "--jq", ".author.login"],
+        check=False,
+    )
+    return output if output else None
+
+
 def determine_sync_reviewer(
     source_gh: GhOps,
     source_sha: str,
@@ -229,18 +191,16 @@ def determine_sync_reviewer(
 ) -> str:
     """Determine the reviewer for a conflict-resolution sync PR.
 
-    Delegates to the stack library's reviewer.determine_reviewer, looking up
-    the source PR merger and commit author.
+    Tries the merger of the source PR first, then the commit author (via
+    GitHub API), then the fallback team.
     """
     source_pr = source_gh.get_pr_for_commit(source_sha)
     pr_number = source_pr.number if source_pr else None
-    # For commit author, we'd need to look it up via the GH API.
-    # The stack library's determine_reviewer handles this.
+
+    # For direct pushes (no source PR), look up the commit author via the API.
     commit_author: str | None = None
     if source_pr is None:
-        # No source PR -- try commit author via GH API.
-        # This would be done in gh_ops; for now we pass None and let fallback work.
-        pass
+        commit_author = get_commit_author(source_gh, source_sha)
 
     return determine_reviewer(
         source_gh,
