@@ -5,7 +5,7 @@
 # public diff, but cannot access the private repo's git history, commit
 # messages, private files, or PR metadata.
 #
-# Expected read-only volume mounts (provided by the workflow at runtime):
+# Expected read-only volume mounts, provided by the workflow at runtime.
 #   /workspace        - The clean snapshot of the codebase (stripped of all
 #                       private code).  This is the agent's working directory.
 #   /mnt/diff         - Directory containing public.diff, the unified diff
@@ -13,7 +13,7 @@
 #   /mnt/skill        - Directory containing SKILL.md, the PR description
 #                       skill file.
 #
-# The container does NOT have:
+# The container does NOT have access to the following.
 #   - Access to the private repo's .git directory or git history.
 #   - Access to private files, commit messages, or PR metadata.
 #
@@ -21,10 +21,11 @@
 # network (required for the oz CLI to call the LLM API), but has no
 # access to private repo data on disk.
 #
-# Example invocation from the workflow:
+# Example invocation from the workflow.
 #   docker run --rm \
 #     --read-only \
 #     --tmpfs /tmp \
+#     --tmpfs /home/agent \
 #     -v "$CLEAN_SNAPSHOT:/workspace:ro" \
 #     -v "$DIFF_DIR:/mnt/diff:ro" \
 #     -v "$SKILL_DIR:/mnt/skill:ro" \

@@ -62,13 +62,6 @@ DESCRIPTION:
 
 ## failure behavior
 
-if the diff is empty or unreadable, output:
+if the diff is empty, unreadable, or you cannot produce a meaningful description, **produce no output** (exit without printing anything).  the workflow detects empty agent output and substitutes its own fallback description that includes the source commit SHA.
 
-```
-TITLE: repo-sync: sync from private
-
-DESCRIPTION:
-Sync changes from private repository.
-```
-
-this ensures the workflow always receives parseable output, even in edge cases.
+do **not** output a generic placeholder description.  an empty output is better than a vague one, because the workflow's fallback is more informative.

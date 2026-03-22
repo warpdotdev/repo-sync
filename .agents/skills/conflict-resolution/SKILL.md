@@ -46,8 +46,10 @@ git add <file>
 
 run a search across the entire repository to confirm no conflict markers remain:
 ```sh
-grep -rn --exclude-dir=.git '^<<<<<<<\|^=======\|^>>>>>>>' .
+grep -rn --exclude-dir=.git '^<<<<<<<[^<]\|^=======[^=]\|^>>>>>>>[^>]' .
 ```
+
+this pattern matches exactly 7 repeated characters followed by a non-matching character, which avoids false positives from markdown separators or decorative comment lines.
 
 if any markers remain, go back to step 3 and resolve them.
 
@@ -65,14 +67,16 @@ if compilation fails, revisit your conflict resolution and fix the issues.  do n
 
 ### 6. verify: code is formatted
 
-run the project's formatter if one is configured.  examples:
-- rust: `cargo fmt`
-- python: `ruff format .` or `black .`
-- typescript: `npx prettier --write .`
+run the project's formatter on the conflicting files (and any files you modified for compilation).  examples:
+- rust: `cargo fmt -- <file1> <file2> ...`
+- python: `ruff format <file1> <file2> ...` or `black <file1> <file2> ...`
+- typescript: `npx prettier --write <file1> <file2> ...`
 
-stage any formatting changes:
+only format files that you modified as part of the resolution.  do not run the formatter on the entire repository.
+
+stage any formatting changes on those files:
 ```sh
-git add -u
+git add <file1> <file2> ...
 ```
 
 ### 7. run affected tests
@@ -81,13 +85,31 @@ identify tests that are likely affected by the files you changed.  run those tes
 
 if tests fail and the failure is caused by your resolution, revisit and fix the resolution.  if the failure appears to be a pre-existing issue unrelated to the conflict, note it but proceed.
 
-### 8. commit the resolution
+### 8. finalize the resolution
 
-commit the resolved files with a descriptive message:
+the correct command to finalize the resolution depends on which git operation caused the conflict.  detect the in-progress operation and use the appropriate command:
+
+**if `.git/rebase-merge/` or `.git/rebase-apply/` exists** (conflict from a rebase):
+```sh
+git rebase --continue
+```
+git will create the commit automatically using the original commit message.  do not run `git commit` separately.
+
+**if `.git/CHERRY_PICK_HEAD` exists** (conflict from a cherry-pick):
+```sh
+git cherry-pick --continue
+```
+
+**if `.git/MERGE_HEAD` exists** (conflict from a merge), or if none of the above apply:
 ```sh
 git commit -m "resolve merge conflicts
 
 Resolved conflicts in: <comma-separated list of files>"
+```
+
+you can check which case applies by running:
+```sh
+ls .git/rebase-merge .git/rebase-apply .git/CHERRY_PICK_HEAD .git/MERGE_HEAD 2>/dev/null
 ```
 
 ### 9. push
