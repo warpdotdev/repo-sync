@@ -47,27 +47,16 @@ def check_idempotency(
 
     Prevents duplicates if the workflow crashes and restarts mid-run.
     Checks local branch existence, remote branch existence (via GitHub API),
-    and open PRs with that head branch.
+    and PRs (any state) with that head branch.
     """
-    # Check if the branch exists locally.
-    if git.branch_exists(branch):
-        existing_pr = gh.pr_exists(branch)
-        return IdempotencyResult(
-            already_exists=True, existing_pr=existing_pr
-        )
-
-    # Check if the branch exists on the remote (covers the case where the
-    # branch was pushed but the workflow crashed before creating a PR).
-    if gh.branch_exists_on_remote(branch):
-        existing_pr = gh.pr_exists(branch)
-        return IdempotencyResult(
-            already_exists=True, existing_pr=existing_pr
-        )
-
-    # Check if a PR was previously created with this head branch (any state,
-    # including merged -- covers the crash-between-merge-and-watermark-update case).
+    branch_found = (
+        git.branch_exists(branch) or gh.branch_exists_on_remote(branch)
+    )
+    # Always use any_state=True so we find merged/closed PRs too (covers the
+    # crash-between-merge-and-watermark-update edge case per TECH-DESIGN.md).
     existing_pr = gh.pr_exists(branch, any_state=True)
-    if existing_pr is not None:
+
+    if branch_found or existing_pr is not None:
         return IdempotencyResult(
             already_exists=True, existing_pr=existing_pr
         )

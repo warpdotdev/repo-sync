@@ -89,6 +89,7 @@ class GhOps:
             body=pr.get("body") or "",
             url=pr["url"],
             state=pr["state"],
+            merged=pr["state"] == "MERGED",
             auto_merge_enabled=pr.get("autoMergeRequest") is not None,
         )
 

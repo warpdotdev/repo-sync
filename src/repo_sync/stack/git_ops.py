@@ -114,7 +114,7 @@ class GitOps:
 
     def tag_target(self, tag_name: str) -> str | None:
         """Get the commit SHA a tag points to, or None if the tag doesn't exist."""
-        result = self._run(["rev-parse", tag_name], check=False)
+        result = self._run(["rev-parse", f"refs/tags/{tag_name}"], check=False)
         if result.success:
             return result.stdout
         return None
