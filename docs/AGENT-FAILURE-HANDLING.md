@@ -18,7 +18,7 @@ the agent may fail due to:
 
 if the PR description agent fails for any reason, the workflow creates the sync PR with a **generic fallback description**:
 
-- **title:** `repo-sync: sync from private (<short-sha>)`
+- **title:** `repo-sync: sync from private (source: <short-sha>)`
 - **description:** `Sync changes from private repository.\n\nSource commit: <short-sha>`
 
 the `Repo-Sync-Origin` trailer is still appended by deterministic code, regardless of whether the agent succeeded or failed.
@@ -32,7 +32,7 @@ title, description = run_pr_description_agent(clean_snapshot, diff)
 
 if agent_failed or title is empty or description is empty:
     short_sha = source_commit[:7]
-    title = f"repo-sync: sync from private ({short_sha})"
+    title = f"repo-sync: sync from private (source: {short_sha})"
     description = f"Sync changes from private repository.\n\nSource commit: {short_sha}"
 
 description += f"\n\nRepo-Sync-Origin: {private_repo}@{source_commit}"

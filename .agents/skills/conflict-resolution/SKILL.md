@@ -22,9 +22,15 @@ this gives you the list of files with unresolved conflicts.
 for each conflicting file:
 - read the entire file.
 - identify every conflict region (delimited by `<<<<<<<` and `>>>>>>>`).
-- understand the intent of both sides:
-  - the "ours" side (between `<<<<<<<` and `=======`) is what was on the target branch before the merge/rebase.
-  - the "theirs" side (between `=======` and `>>>>>>>`) is the incoming change being applied.
+- understand the intent of both sides.  each conflict region has the following structure:
+  ```
+  <<<<<<< <ref-or-label>
+  ... first side ...
+  =======
+  ... second side ...
+  >>>>>>> <ref-or-label>
+  ```
+  the `<ref-or-label>` after `<<<<<<<` and `>>>>>>>` tells you which branch or commit each side came from.  **read these labels carefully** -- the meaning of "first side" vs. "second side" depends on whether the conflict arose from a `git merge` or a `git rebase` (rebase swaps the sides relative to merge).  do not assume which side is "ours" or "theirs" -- always check the labels.
 - look at surrounding code and other files in the repository for context on what the correct resolution should be.
 
 ### 3. resolve each conflict
@@ -40,7 +46,7 @@ git add <file>
 
 run a search across the entire repository to confirm no conflict markers remain:
 ```sh
-grep -rn '<<<<<<<\|=======\|>>>>>>>' --include='*' .
+grep -rn --exclude-dir=.git '^<<<<<<<\|^=======\|^>>>>>>>' .
 ```
 
 if any markers remain, go back to step 3 and resolve them.
@@ -96,6 +102,7 @@ git push
 you have **failed** if any of the following are true:
 - conflict markers remain in any file after your resolution.
 - the code does not compile after your resolution.
+- tests fail as a result of your resolution and you cannot fix the failures.
 - your resolution changes the semantic behavior of code in a way that is clearly incorrect (e.g., deleting one side entirely when both sides should be integrated).
 - you are unable to determine the correct resolution for a conflict and cannot make a reasonable best-effort attempt.
 
