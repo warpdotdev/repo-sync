@@ -29,7 +29,7 @@ def remove_private_directories(root: str) -> None:
         for dname in dirnames:
             if dname == "private":
                 full = os.path.join(dirpath, dname)
-                # Only remove actual directories (or symlinks to dirs).
+                # Only remove actual directories, not symlinks.
                 # Symlinks named ``private`` are left for the symlink
                 # check to catch later.
                 if os.path.islink(full):
@@ -60,9 +60,10 @@ def strip_tree(
     When *validate_only* is True, no files are modified; only validation
     errors are collected and returned.
 
-    When *paths* is provided, only those relative paths (files) are
-    checked for marker validity.  Directory removal and symlink checks
-    are still performed on the full tree unless *validate_only* is True.
+    When *paths* is provided, only those relative paths (or glob
+    patterns) are checked for marker validity.  Symlink checks are
+    always performed on the full tree.  Directory removal is skipped
+    in validate-only mode.
 
     Returns a list of error strings.  An empty list means success.
     Raises ``StrippingError`` wrapping all errors when not in
@@ -86,7 +87,11 @@ def strip_tree(
 
     # Step 3: process remaining files.
     if paths is not None:
-        file_list = [os.path.join(root, p) for p in paths]
+        file_list = _expand_paths(root, paths)
+        if not file_list:
+            errors.append(
+                f"paths filter matched no files: {paths}"
+            )
     else:
         file_list = _collect_files(root)
 
@@ -126,6 +131,27 @@ def strip_tree(
         raise StrippingError("\n".join(errors))
 
     return errors
+
+
+def _expand_paths(root: str, patterns: list[str]) -> list[str]:
+    """Expand *patterns* relative to *root* using glob matching.
+
+    Each pattern is first tried as a literal path; if that does not
+    exist, it is expanded as a glob via ``pathlib.Path.glob()``.
+    Returns deduplicated absolute paths.
+    """
+    root_path = Path(root)
+    result: set[str] = set()
+    for pattern in patterns:
+        literal = root_path / pattern
+        if literal.exists() and not literal.is_dir():
+            result.add(str(literal))
+        else:
+            matches = list(root_path.glob(pattern))
+            for m in matches:
+                if m.is_file() or m.is_symlink():
+                    result.add(str(m))
+    return sorted(result)
 
 
 def _collect_files(root: str) -> list[str]:

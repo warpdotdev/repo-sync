@@ -392,3 +392,42 @@ class TestValidateOnlyMode:
         _write(tmp_path, "private/secret.txt", "secret")
         strip_tree(str(tmp_path), validate_only=True)
         assert (tmp_path / "private" / "secret.txt").exists()
+
+    def test_symlink_inside_private_detected_in_validate_only(self, tmp_path: Path) -> None:
+        """In validate-only mode, symlinks inside private/ are detected.
+
+        Since validate-only does not remove private/ directories, the
+        symlink check walks the full tree and finds the symlink.
+        """
+        _write(tmp_path, "public.txt", "content")
+        private_dir = tmp_path / "private"
+        private_dir.mkdir()
+        (private_dir / "link.txt").symlink_to(tmp_path / "public.txt")
+        errors = strip_tree(str(tmp_path), validate_only=True)
+        assert any("symlinks" in e for e in errors)
+
+    def test_paths_glob_pattern(self, tmp_path: Path) -> None:
+        """Glob patterns in paths are expanded correctly."""
+        _write(
+            tmp_path,
+            "src/good.rs",
+            "// !repo-sync: private-start\n// !repo-sync: private-end\n",
+        )
+        _write(
+            tmp_path,
+            "src/bad.rs",
+            "// !repo-sync: private-start\nno end\n",
+        )
+        # Glob matching all .rs files under src/.
+        errors = strip_tree(
+            str(tmp_path), validate_only=True, paths=["src/*.rs"]
+        )
+        assert any("unterminated" in e for e in errors)
+
+    def test_paths_no_match_errors(self, tmp_path: Path) -> None:
+        """A paths filter that matches zero files produces an error."""
+        _write(tmp_path, "code.rs", "fn main() {}\n")
+        errors = strip_tree(
+            str(tmp_path), validate_only=True, paths=["nonexistent/*.xyz"]
+        )
+        assert any("matched no files" in e for e in errors)
