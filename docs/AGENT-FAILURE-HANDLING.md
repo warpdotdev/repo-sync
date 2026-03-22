@@ -30,7 +30,7 @@ the `Repo-Sync-Origin` trailer is still appended by deterministic code, regardle
 ```
 title, description = run_pr_description_agent(clean_snapshot, diff)
 
-if agent_failed or title is empty or description is empty:
+if agent_failed or output_parse_failed or title is empty or description is empty:
     short_sha = source_commit[:7]
     title = f"repo-sync: sync from private (source: {short_sha})"
     description = f"Sync changes from private repository.\n\nSource commit: {short_sha}"

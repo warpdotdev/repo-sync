@@ -46,10 +46,10 @@ git add <file>
 
 run a search across the entire repository to confirm no conflict markers remain:
 ```sh
-grep -rn --exclude-dir=.git '^<<<<<<<[^<]\|^=======[^=]\|^>>>>>>>[^>]' .
+grep -Ern --exclude-dir=.git '^<{7}[^<]|^={7}([^=]|$)|^>{7}[^>]' .
 ```
 
-this pattern matches exactly 7 repeated characters followed by a non-matching character, which avoids false positives from markdown separators or decorative comment lines.
+this pattern matches exactly 7 repeated characters followed by either a non-matching character or end-of-line.  the end-of-line alternative is needed because the `=======` separator is typically a bare line with nothing after it.
 
 if any markers remain, go back to step 3 and resolve them.
 
@@ -91,13 +91,13 @@ the correct command to finalize the resolution depends on which git operation ca
 
 **if `.git/rebase-merge/` or `.git/rebase-apply/` exists** (conflict from a rebase):
 ```sh
-git rebase --continue
+GIT_EDITOR=true git rebase --continue
 ```
-git will create the commit automatically using the original commit message.  do not run `git commit` separately.
+git will create the commit automatically using the original commit message.  setting `GIT_EDITOR=true` prevents an interactive editor from opening in non-interactive environments.  do not run `git commit` separately.
 
 **if `.git/CHERRY_PICK_HEAD` exists** (conflict from a cherry-pick):
 ```sh
-git cherry-pick --continue
+GIT_EDITOR=true git cherry-pick --continue
 ```
 
 **if `.git/MERGE_HEAD` exists** (conflict from a merge), or if none of the above apply:

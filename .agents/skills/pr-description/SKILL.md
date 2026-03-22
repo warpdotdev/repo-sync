@@ -12,7 +12,7 @@ do **not** include any information that is not directly observable from the diff
 
 ## context
 
-you are running inside an isolated container.  the working directory contains a clean snapshot of a codebase (with all internal-only code already stripped).  the file `/mnt/diff/public.diff` contains the unified diff of changes being synced.
+you are running inside an isolated container.  the working directory contains a clean snapshot of a codebase (with all internal-only code already stripped).  the working directory is **not** a git repository -- there is no `.git` directory, so git commands like `git log` or `git blame` will not work.  the file `/mnt/diff/public.diff` contains the unified diff of changes being synced.
 
 ## procedure
 

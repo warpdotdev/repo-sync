@@ -14,8 +14,8 @@
 #                       skill file.
 #
 # The container does NOT have access to the following.
-#   - Access to the private repo's .git directory or git history.
-#   - Access to private files, commit messages, or PR metadata.
+#   - The private repo's .git directory or git history.
+#   - Private files, commit messages, or PR metadata.
 #
 # The isolation boundary is filesystem-only: the agent can reach the
 # network (required for the oz CLI to call the LLM API), but has no
