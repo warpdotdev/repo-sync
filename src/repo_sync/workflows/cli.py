@@ -187,6 +187,25 @@ def _check_ci_failed(gh: GhOps, pr: PullRequest) -> bool:
     return gh.get_check_failures(head_sha) > 0
 
 
+def cmd_parse_trailer(args: argparse.Namespace) -> None:
+    """Parse the Repo-Sync-Origin trailer from a PR's body."""
+    from repo_sync.stack.trailers import parse_origin
+
+    gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
+    body = gh._run(
+        ["pr", "view", str(args.pr_number), "--repo", gh.repo,
+         "--json", "body", "--jq", ".body"],
+        check=False,
+    )
+    origin = parse_origin(body) if body else None
+    if origin:
+        output = {"repo": origin.repo, "sha": origin.sha}
+    else:
+        output = {"repo": "", "sha": ""}
+    json.dump(output, sys.stdout)
+    print()
+
+
 def cmd_escalation_check(args: argparse.Namespace) -> None:
     """Run escalation checks on all open sync PRs."""
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
@@ -287,6 +306,14 @@ def main() -> None:
         "--source-is-private", action="store_true", default=False
     )
     p.set_defaults(func=cmd_detect_direction)
+
+    # parse-trailer.
+    p = subparsers.add_parser(
+        "parse-trailer", help="Parse Repo-Sync-Origin trailer from a PR."
+    )
+    p.add_argument("--pr-number", required=True, type=int)
+    p.add_argument("--gh-repo", required=True)
+    p.set_defaults(func=cmd_parse_trailer)
 
     # escalation-check.
     p = subparsers.add_parser(

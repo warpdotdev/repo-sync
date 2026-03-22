@@ -32,13 +32,17 @@ on:
       auth_token:
         description: "GitHub App installation token with cross-repo push and PR permissions."
         required: true
+  # workflow_dispatch is used for stuck-stack recovery.  GitHub Actions does
+  # not support secrets under workflow_dispatch, so the dispatched run must
+  # generate its own token (e.g. via actions/create-github-app-token).  The
+  # consuming repo should store REPO_SYNC_APP_ID and
+  # REPO_SYNC_APP_PRIVATE_KEY as repo-level secrets.
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "Stuck PR number to restack (used by stuck stack recovery dispatch)."
-        required: false
+        description: "Stuck PR number to restack."
+        required: true
         type: string
-        default: ""
       peer_repo:
         description: "Counterpart repo (e.g. warpdotdev/warp-public)."
         required: true
@@ -56,10 +60,6 @@ on:
         required: false
         type: string
         default: "@oncall-client-primary"
-    secrets:
-      auth_token:
-        description: "GitHub App installation token with cross-repo push and PR permissions."
-        required: true
 
 # Serialize ALL restack operations to prevent concurrent rebases.
 concurrency:
@@ -79,17 +79,35 @@ jobs:
       contents: write
       pull-requests: write
     env:
-      GH_TOKEN: ${{ secrets.auth_token }}
       PEER_REPO: ${{ inputs.peer_repo }}
       PEER_DEFAULT_BRANCH: ${{ inputs.peer_default_branch }}
       SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:
+      # For workflow_dispatch, generate a token since secrets aren't available.
+      # For workflow_call, use the passed auth_token.
+      - name: Generate token (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        id: gen_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REPO_SYNC_APP_ID }}
+          private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set GH_TOKEN
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "GH_TOKEN=${{ steps.gen_token.outputs.token }}" >> "$GITHUB_ENV"
+          else
+            echo "GH_TOKEN=${{ secrets.auth_token }}" >> "$GITHUB_ENV"
+          fi
+
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.auth_token }}
+          token: ${{ env.GH_TOKEN }}
 
       - name: Checkout repo-sync tooling
         uses: actions/checkout@v4
@@ -97,7 +115,7 @@ jobs:
           repository: warpdotdev/repo-sync
           ref: v1
           path: .repo-sync
-          token: ${{ secrets.auth_token }}
+          token: ${{ env.GH_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -107,23 +125,8 @@ jobs:
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
 
-      # Direction detection and watermark repo via Python CLI.
-      - name: Set direction variables
-        id: direction
-        run: |
-          PRIVATE_FLAG=""
-          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
-          python -m repo_sync.workflows.cli detect-direction \
-            --head-branch "${{ github.event.pull_request.head.ref || '' }}" \
-            $PRIVATE_FLAG
-          # Watermark lives in THIS repo (the target).
-          echo "watermark_repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
-
-      # ---------------------------------------------------------------
-      # Identify the merged PR.  For workflow_dispatch (stuck stack
-      # recovery), the PR number may be passed as an input or we detect
-      # it from the stuck PR search.
-      # ---------------------------------------------------------------
+      # Identify the PR context FIRST so we can use the stuck PR's head
+      # branch for direction detection (avoids the fallback inversion bug).
       - name: Identify PR context
         id: merged_pr
         run: |
@@ -164,9 +167,25 @@ jobs:
           echo "merged_head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
           echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head ${HEAD_BRANCH} (${HEAD_SHA})."
 
-      # ---------------------------------------------------------------
-      # Update the watermark tag to point to the merge commit.
-      # ---------------------------------------------------------------
+      # Direction detection AFTER PR identification, so we can use the stuck
+      # PR's head branch for direction detection instead of the fallback.
+      - name: Set direction variables
+        id: direction
+        run: |
+          # Use the stuck PR's head branch (if available) or the merged PR's head branch.
+          if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
+            HEAD_BRANCH="${{ steps.merged_pr.outputs.stuck_head_branch }}"
+          else
+            HEAD_BRANCH="${{ github.event.pull_request.head.ref || '' }}"
+          fi
+          PRIVATE_FLAG=""
+          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          python -m repo_sync.workflows.cli detect-direction \
+            --head-branch "${HEAD_BRANCH}" \
+            $PRIVATE_FLAG
+          # Watermark lives in THIS repo (the target).
+          echo "watermark_repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
+
       - name: Update watermark
         if: steps.merged_pr.outputs.mode == 'normal'
         run: |

@@ -88,14 +88,13 @@ jobs:
                 ci_failure)
                   echo "PR #${PR_NUMBER}: CI failure with auto-merge. Disabling auto-merge and assigning reviewer."
                   gh pr merge "${PR_NUMBER}" --disable-auto 2>/dev/null || true
-                  # Determine reviewer via Python CLI.
-                  PR_BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
-                  SOURCE_INFO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
-                    | sed 's/.*@//' | { read -r SHA; echo "$SHA"; })
-                  SOURCE_REPO=$(echo "$PR_BODY" | grep '^Repo-Sync-Origin:' | tail -n1 \
-                    | sed 's/^Repo-Sync-Origin: *//;s/@[^@]*$//')
+                  # Parse source info via Python to avoid duplicating trailer parsing in shell.
+                  TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
+                    --pr-number "${PR_NUMBER}" --gh-repo "${{ github.repository }}")
+                  SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
+                  SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
                   REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
-                    --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_INFO}" \
+                    --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
                     --fallback-team "${ESCALATE_TO}")
                   REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
                   gh pr edit "${PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true

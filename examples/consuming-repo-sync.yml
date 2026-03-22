@@ -111,5 +111,8 @@ jobs:
     with:
       escalate_to: ${{ env.ESCALATE_TO }}
       escalate_after: ${{ env.ESCALATE_AFTER }}
+      peer_repo: ${{ env.PEER_REPO }}
+      peer_default_branch: ${{ env.PEER_DEFAULT_BRANCH }}
+      source_is_private: ${{ env.SOURCE_IS_PRIVATE == 'true' }}
     secrets:
       auth_token: ${{ needs.auth.outputs.token }}
