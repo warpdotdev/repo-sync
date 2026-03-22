@@ -52,6 +52,7 @@ DESCRIPTION:
 - organize by logical grouping if the diff touches multiple areas.
 - mention notable additions, removals, or behavioral changes.
 - if the diff is trivial (e.g., a single typo fix), keep the description to one sentence.
+- if the diff is very large, focus on the high-level functional changes rather than describing every detail.  organize by logical area.
 - do not include a list of every file changed -- focus on the functional impact.
 
 ## what you do NOT do

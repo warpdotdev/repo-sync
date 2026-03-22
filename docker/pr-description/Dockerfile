@@ -16,6 +16,7 @@
 # The container does NOT have access to the following.
 #   - The private repo's .git directory or git history.
 #   - Private files, commit messages, or PR metadata.
+#   - The git CLI (not included in the base image, as defense-in-depth).
 #
 # The isolation boundary is filesystem-only: the agent can reach the
 # network (required for the oz CLI to call the LLM API), but has no

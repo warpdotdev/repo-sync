@@ -46,10 +46,10 @@ git add <file>
 
 run a search across the entire repository to confirm no conflict markers remain:
 ```sh
-grep -Ern --exclude-dir=.git '^<{7}[^<]|^={7}([^=]|$)|^>{7}[^>]' .
+grep -Ern --exclude-dir=.git '^<{7}([^<]|$)|^={7}([^=]|$)|^>{7}([^>]|$)' .
 ```
 
-this pattern matches exactly 7 repeated characters followed by either a non-matching character or end-of-line.  the end-of-line alternative is needed because the `=======` separator is typically a bare line with nothing after it.
+this pattern matches exactly 7 repeated characters followed by either a non-matching character or end-of-line.  the end-of-line alternative is needed because conflict markers (especially `=======`) can appear as bare lines with nothing after them.
 
 if any markers remain, go back to step 3 and resolve them.
 
@@ -81,7 +81,7 @@ git add <file1> <file2> ...
 
 ### 7. run affected tests
 
-identify tests that are likely affected by the files you changed.  run those tests using the project's test runner.  check the project's README or CI configuration for the correct test command.
+identify tests that are likely affected by the files you changed.  run those tests using the project's test runner.  check the project's README, Makefile, or build configuration for the correct test command.
 
 if tests fail and the failure is caused by your resolution, revisit and fix the resolution.  if the failure appears to be a pre-existing issue unrelated to the conflict, note it but proceed.
 
@@ -109,7 +109,7 @@ Resolved conflicts in: <comma-separated list of files>"
 
 you can check which case applies by running:
 ```sh
-ls .git/rebase-merge .git/rebase-apply .git/CHERRY_PICK_HEAD .git/MERGE_HEAD 2>/dev/null
+ls -d .git/rebase-merge .git/rebase-apply .git/CHERRY_PICK_HEAD .git/MERGE_HEAD 2>/dev/null
 ```
 
 ### 9. push

@@ -56,10 +56,11 @@ the agent may fail due to:
 
 if the conflict resolution agent fails for any reason:
 
-1. the PR is created (or left in its current state) **without** an agent-proposed resolution.  the conflict markers may remain on the branch, or the branch may be in a dirty state.
-2. a reviewer is requested from the person who merged the source PR (or the commit author for direct pushes, or `@oncall-client-primary` as a last resort).
-3. a `Repo-Sync-Assigned` trailer is appended to the PR description to start the escalation clock.
-4. auto-merge is **not** enabled on the PR.
+1. the workflow aborts the in-progress git operation (`git rebase --abort`, `git cherry-pick --abort`, or `git merge --abort` as appropriate) to return the branch to a clean state.  the remote branch remains unchanged from before the agent was invoked.
+2. the PR is created (or left in its current state) **without** an agent-proposed resolution.
+3. a reviewer is requested from the person who merged the source PR (or the commit author for direct pushes, or `@oncall-client-primary` as a last resort).
+4. a `Repo-Sync-Assigned` trailer is appended to the PR description to start the escalation clock.
+5. auto-merge is **not** enabled on the PR.
 
 the human reviewer is responsible for resolving the conflicts manually.
 
@@ -78,11 +79,7 @@ reviewer = determine_reviewer(source_commit)
 request_review(pr, reviewer)
 append_trailer(pr, f"Repo-Sync-Assigned: {reviewer}@{now_iso8601()}")
 
-if success:
-    # Agent resolved it, but do NOT enable auto-merge.
-    # Human must review the resolution.
-    pass
-else:
-    # No resolution -- human must resolve and merge manually.
-    pass
+# Note: auto-merge is NOT enabled regardless of outcome.
+# If the agent succeeded, the human reviews the proposed resolution.
+# If the agent failed, the human must resolve conflicts manually.
 ```
