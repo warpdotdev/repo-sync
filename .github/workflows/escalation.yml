@@ -1,0 +1,119 @@
+# Reusable workflow: escalation cron.
+# Triggered by a consuming repo on a cron schedule (e.g. every 15 minutes).
+#
+# Performs three checks on all open sync PRs:
+# 1. Timeout escalation: if a Repo-Sync-Assigned trailer has exceeded the
+#    configured timeout, request review from the escalation team.
+# 2. CI failure detection: if a PR has auto-merge enabled but CI has failed,
+#    disable auto-merge, assign a reviewer, and start the escalation clock.
+# 3. Stuck stack recovery: if a PR's base branch no longer exists (the PR
+#    below it was merged and its branch deleted), dispatch the restack workflow.
+
+name: escalation
+
+on:
+  workflow_call:
+    inputs:
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      escalate_after:
+        description: "Duration before escalation (e.g. 5m, 1h, 30m)."
+        required: true
+        type: string
+      peer_repo:
+        description: "Counterpart repo (needed for stuck-stack restack dispatch)."
+        required: true
+        type: string
+      peer_default_branch:
+        description: "Default branch of the peer repo."
+        required: true
+        type: string
+      source_is_private:
+        description: "If true, source repo is private."
+        required: true
+        type: boolean
+    secrets:
+      auth_token:
+        description: "GitHub App installation token with cross-repo push and PR permissions."
+        required: true
+
+jobs:
+  escalation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.auth_token }}
+      ESCALATE_TO: ${{ inputs.escalate_to }}
+      ESCALATE_AFTER: ${{ inputs.escalate_after }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { token: "${{ secrets.auth_token }}" }
+      - uses: actions/checkout@v4
+        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ secrets.auth_token }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e .repo-sync
+
+      - name: Run escalation checks
+        id: checks
+        run: |
+          python -m repo_sync.workflows.cli escalation-check \
+            --gh-repo "${{ github.repository }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --escalate-after "${ESCALATE_AFTER}" \
+            > /tmp/escalation_results.json
+          cat /tmp/escalation_results.json
+
+      - name: Process escalation actions
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+
+          jq -c '.checks[]' /tmp/escalation_results.json | while IFS= read -r CHECK; do
+            PR_NUMBER=$(echo "$CHECK" | jq -r '.pr_number')
+            ACTIONS=$(echo "$CHECK" | jq -r '.actions[]')
+
+            for ACTION in $ACTIONS; do
+              case "$ACTION" in
+                escalate_timeout)
+                  echo "PR #${PR_NUMBER}: escalation timeout. Requesting review from ${ESCALATE_TO}."
+                  gh pr edit "${PR_NUMBER}" --add-reviewer "${ESCALATE_TO}" 2>/dev/null || true
+                  ;;
+                ci_failure)
+                  echo "PR #${PR_NUMBER}: CI failure with auto-merge. Disabling auto-merge and assigning reviewer."
+                  gh pr merge "${PR_NUMBER}" --disable-auto 2>/dev/null || true
+                  # Parse source info via Python to avoid duplicating trailer parsing in shell.
+                  TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
+                    --pr-number "${PR_NUMBER}" --gh-repo "${{ github.repository }}")
+                  SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
+                  SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
+                  REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
+                    --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+                    --fallback-team "${ESCALATE_TO}")
+                  REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
+                  gh pr edit "${PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+                  TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                  CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
+                  gh pr edit "${PR_NUMBER}" --body "${CURRENT_BODY}
+Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+                  ;;
+                stuck_stack)
+                  echo "PR #${PR_NUMBER}: stuck stack. Dispatching restack."
+                  gh workflow run restack.yml \
+                    -f pr_number="${PR_NUMBER}" \
+                    -f peer_repo="${{ inputs.peer_repo }}" \
+                    -f peer_default_branch="${{ inputs.peer_default_branch }}" \
+                    -f source_is_private="${{ inputs.source_is_private }}" \
+                    -f escalate_to="${ESCALATE_TO}" \
+                    2>/dev/null || echo "Warning: could not dispatch restack for PR #${PR_NUMBER}."
+                  ;;
+              esac
+            done
+          done
+          echo "Escalation processing complete."

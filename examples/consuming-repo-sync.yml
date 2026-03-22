@@ -1,0 +1,101 @@
+# Example: consuming repo workflow for repo-sync.
+#
+# Copy this file to .github/workflows/repo-sync.yml in your consuming repo
+# and adjust the configuration values below.
+#
+# Prerequisites for the consuming repo:
+#   - A GitHub App installed on both repos with contents:write, pull_requests:write,
+#     and metadata:read permissions.
+#   - The App's ID and private key stored as repository secrets (REPO_SYNC_APP_ID,
+#     REPO_SYNC_APP_PRIVATE_KEY).
+#   - Auto-merge enabled as a repo-level setting.
+#   - Squash merge configured to preserve the PR description in the commit message.
+#   - Branch protection rules on repo-sync/* branches (only the sync workflow's
+#     token can create/push to them).
+
+name: repo-sync
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed]
+    branches: [main]
+  schedule:
+    # Run escalation checks every 15 minutes.
+    - cron: "*/15 * * * *"
+
+# -------------------------------------------------------------------------
+# Configuration — adjust these for your repo pair.
+# NOTE: GitHub Actions does not support ${{ env.* }} in reusable workflow
+# `with:` blocks, so values must be hardcoded directly below.
+# -------------------------------------------------------------------------
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Generate a short-lived GitHub App installation token.
+  # This is shared by all jobs below.
+  # -----------------------------------------------------------------------
+  auth:
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.token.outputs.token }}
+    steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REPO_SYNC_APP_ID }}
+          private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }},warp-public
+
+  # -----------------------------------------------------------------------
+  # Sync creation: triggered on push to default branch.
+  # -----------------------------------------------------------------------
+  sync:
+    needs: auth
+    if: github.event_name == 'push'
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    with:
+      peer_repo: warpdotdev/warp-public
+      peer_default_branch: main
+      source_is_private: true
+      escalate_to: "@oncall-client-primary"
+      # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}
+
+  # -----------------------------------------------------------------------
+  # Restack: triggered when a sync PR is merged.
+  # -----------------------------------------------------------------------
+  restack:
+    needs: auth
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
+    with:
+      peer_repo: warpdotdev/warp-public
+      peer_default_branch: main
+      source_is_private: true
+      escalate_to: "@oncall-client-primary"
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}
+
+  # -----------------------------------------------------------------------
+  # Escalation cron: runs on schedule.
+  # -----------------------------------------------------------------------
+  escalation:
+    needs: auth
+    if: github.event_name == 'schedule'
+    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
+    with:
+      escalate_to: "@oncall-client-primary"
+      escalate_after: "1h"
+      peer_repo: warpdotdev/warp-public
+      peer_default_branch: main
+      source_is_private: true
+    secrets:
+      auth_token: ${{ needs.auth.outputs.token }}

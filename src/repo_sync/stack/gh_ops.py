@@ -353,3 +353,60 @@ class GhOps:
             return True
         except subprocess.CalledProcessError:
             return False
+
+    def get_tag_sha(self, tag_name: str) -> str | None:
+        """Get the commit SHA that a tag points to, or None if the tag doesn't exist."""
+        try:
+            output = self._run(
+                ["api", f"repos/{self.repo}/git/ref/tags/{tag_name}",
+                 "--jq", ".object.sha"],
+                check=True,
+            )
+            return output if output else None
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_commit_message(self, sha: str) -> str | None:
+        """Get a commit's message by SHA via the GitHub API."""
+        try:
+            output = self._run(
+                ["api", f"repos/{self.repo}/git/commits/{sha}",
+                 "--jq", ".message"],
+                check=True,
+            )
+            return output if output else None
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_commit_author_login(self, sha: str) -> str | None:
+        """Get the GitHub login of a commit's author."""
+        try:
+            output = self._run(
+                ["api", f"repos/{self.repo}/commits/{sha}",
+                 "--jq", ".author.login"],
+                check=True,
+            )
+            return output if output else None
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_pr_head_sha(self, pr_number: int) -> str | None:
+        """Get the head commit SHA for a PR."""
+        output = self._run(
+            ["pr", "view", str(pr_number), "--repo", self.repo,
+             "--json", "headRefOid", "--jq", ".headRefOid"],
+            check=False,
+        )
+        return output if output else None
+
+    def get_check_failures(self, sha: str) -> int:
+        """Count the number of failing check runs on a commit."""
+        output = self._run(
+            ["api", f"repos/{self.repo}/commits/{sha}/check-runs",
+             "--jq", '[.check_runs[] | select(.conclusion == "failure" or .conclusion == "timed_out")] | length'],
+            check=False,
+        )
+        try:
+            return int(output)
+        except (ValueError, TypeError):
+            return 0

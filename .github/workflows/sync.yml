@@ -1,0 +1,248 @@
+# Reusable workflow: sync creation.
+# Triggered by a consuming repo on push to its default branch.
+# All decision-making logic lives in Python (repo_sync.workflows.cli).
+
+name: sync
+
+on:
+  workflow_call:
+    inputs:
+      peer_repo:
+        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      peer_default_branch:
+        description: "Default branch of the peer repo (e.g. main)."
+        required: true
+        type: string
+      source_is_private:
+        description: "If true, strip private code before syncing."
+        required: true
+        type: boolean
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      slack_webhook_url:
+        description: "Slack webhook URL for stripping error notifications."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      auth_token:
+        required: true
+
+concurrency:
+  group: repo-sync-${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ inputs.peer_repo }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.auth_token }}
+      PEER_REPO: ${{ inputs.peer_repo }}
+      PEER_DEFAULT_BRANCH: ${{ inputs.peer_default_branch }}
+      SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, token: "${{ secrets.auth_token }}" }
+      - uses: actions/checkout@v4
+        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ secrets.auth_token }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e .repo-sync
+
+      - name: Detect direction
+        id: direction
+        run: |
+          PRIVATE_FLAG=""
+          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          python -m repo_sync.workflows.cli detect-direction $PRIVATE_FLAG
+
+      # No early-exit loop check here.  enumerate_unsynced_commits already
+      # filters out sync-originated commits per-commit.  An early exit on
+      # the trigger SHA would incorrectly skip unsynced commits when a
+      # sync-originated commit replaces a normal commit in the concurrency
+      # group's pending slot.
+
+      - name: Read watermark
+        id: watermark
+        run: |
+          python -m repo_sync.workflows.cli read-watermark \
+            --peer-repo "${PEER_REPO}" \
+            --direction "${{ steps.direction.outputs.direction }}"
+
+      - name: List unsynced commits
+        id: unsynced
+        run: |
+          python -m repo_sync.workflows.cli list-unsynced \
+            --repo-dir . --gh-repo "${{ github.repository }}" \
+            --direction "${{ steps.direction.outputs.direction }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --watermark-sha "${{ steps.watermark.outputs.last_synced_sha }}"
+
+      - name: Checkout peer repo
+        if: steps.unsynced.outputs.count != '0'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.peer_repo }}
+          ref: ${{ inputs.peer_default_branch }}
+          path: peer
+          fetch-depth: 0
+          token: ${{ secrets.auth_token }}
+
+      - name: Find existing stack top
+        if: steps.unsynced.outputs.count != '0'
+        id: stack_top
+        run: |
+          python -m repo_sync.workflows.cli find-stack-top \
+            --peer-repo "${PEER_REPO}" \
+            --direction "${{ steps.direction.outputs.direction }}"
+
+      # Per-commit sync PR creation.  The loop and git/gh side effects remain
+      # in shell; all decision logic (descriptions, reviewer, idempotency) is
+      # delegated to Python CLI subcommands.
+      - name: Create sync PRs
+        if: steps.unsynced.outputs.count != '0'
+        env:
+          ESCALATE_TO: ${{ inputs.escalate_to }}
+          SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
+          SOURCE_REPO: ${{ github.repository }}
+          STACK_TOP: ${{ steps.stack_top.outputs.stack_top }}
+        run: |
+          set -euo pipefail
+          DIRECTION="${{ steps.direction.outputs.direction }}"
+          BRANCH_PREFIX="${{ steps.direction.outputs.branch_prefix }}"
+          STACK_BASE_BRANCH="${STACK_TOP:-${PEER_DEFAULT_BRANCH}}"
+          IS_STACK_BOTTOM="true"
+          [ -n "${STACK_TOP:-}" ] && IS_STACK_BOTTOM="false"
+
+          while IFS= read -r SOURCE_SHA; do
+            [ -z "$SOURCE_SHA" ] && continue
+            SHORT_SHA="${SOURCE_SHA:0:7}"
+            SYNC_BRANCH="${BRANCH_PREFIX}/${SHORT_SHA}"
+
+            # Idempotency guard.
+            if gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.ref' 2>/dev/null | grep -q .; then
+              STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
+            if gh pr list --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" --state all \
+              --json number --jq '.[0].number // empty' 2>/dev/null | grep -q .; then
+              STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
+
+            if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
+              # --- Private-to-public: strip, tree replacement, Docker agent. ---
+              SNAPSHOT_DIR="/tmp/snapshot-${SHORT_SHA}"
+              if ! python -m repo_sync.strip "${SOURCE_SHA}" "${SNAPSHOT_DIR}"; then
+                [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
+                  --data "{\"text\":\"repo-sync: stripping failed for ${SHORT_SHA} in ${SOURCE_REPO}.\"}" \
+                  "$SLACK_WEBHOOK_URL" || true
+                exit 1
+              fi
+              pushd peer > /dev/null
+              git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
+                || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
+              git rm -rf --quiet . 2>/dev/null || true
+              cp -a "${SNAPSHOT_DIR}/." . && git add -A
+              if git diff --cached --quiet; then popd > /dev/null; rm -rf "${SNAPSHOT_DIR}"; continue; fi
+              git checkout -b "${SYNC_BRANCH}"
+              git commit -m "repo-sync: sync from private
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              git diff "origin/${STACK_BASE_BRANCH}" HEAD -- > /tmp/diff-${SHORT_SHA}.patch
+              AGENT_OUT="/tmp/agent-out-${SHORT_SHA}"; mkdir -p "$AGENT_OUT"
+              PR_TITLE="repo-sync: sync from private (${SHORT_SHA})"
+              PR_BODY="repo-sync: sync from private (source: \`${SHORT_SHA}\`)"
+              if docker run --rm \
+                -v "${SNAPSHOT_DIR}:/workspace:ro" -v "/tmp/diff-${SHORT_SHA}.patch:/diff.patch:ro" \
+                -v "$(pwd)/../.repo-sync/.agents/skills/pr-description/SKILL.md:/skill.md:ro" \
+                -v "${AGENT_OUT}:/output" -w /workspace warpdotdev/repo-sync-agent:v1 \
+                oz agent run --skill-file /skill.md --context-file /diff.patch --output-dir /output \
+                2>/dev/null; then
+                [ -f "${AGENT_OUT}/title.txt" ] && PR_TITLE=$(cat "${AGENT_OUT}/title.txt")
+                [ -f "${AGENT_OUT}/body.txt" ] && PR_BODY=$(cat "${AGENT_OUT}/body.txt")
+              fi
+              PR_BODY="${PR_BODY}
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              git push origin "${SYNC_BRANCH}"
+              PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
+              if [ "$IS_STACK_BOTTOM" = "true" ]; then
+                gh pr merge "$(echo "$PR_URL" | grep -oE '[0-9]+$')" \
+                  --repo "${PEER_REPO}" --auto --squash || true
+              fi
+              popd > /dev/null
+              rm -rf "${SNAPSHOT_DIR}" "/tmp/diff-${SHORT_SHA}.patch" "${AGENT_OUT}"
+            else
+              # --- Public-to-private: cherry-pick, Python-built description. ---
+              pushd peer > /dev/null
+              if ! git remote get-url source >/dev/null 2>&1; then
+                git remote add source "$(cd .. && pwd)"
+              fi
+              git fetch source
+              git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
+                || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
+              git checkout -b "${SYNC_BRANCH}"
+              CHERRY_PICK_FAILED="false"
+              if ! git cherry-pick "${SOURCE_SHA}" --allow-empty -x 2>/dev/null; then
+                CHERRY_PICK_FAILED="true"
+                if ! oz agent run --skill warpdotdev/repo-sync:conflict-resolution \
+                  --context "Conflicting files: $(git diff --name-only --diff-filter=U)" 2>/dev/null; then
+                  git cherry-pick --abort 2>/dev/null || true
+                  git commit --allow-empty -m "repo-sync: cherry-pick conflict — needs manual resolution
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                fi
+              fi
+              # Append Repo-Sync-Origin trailer to the commit regardless of
+              # whether the cherry-pick succeeded cleanly or the agent resolved
+              # conflicts.  This ensures the trailer is always present in the
+              # commit message for loop detection.
+              if [ "$CHERRY_PICK_FAILED" = "false" ]; then
+                git commit --amend -m "$(git log -1 --format='%B')
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              else
+                # Agent-resolved cherry-pick: amend the agent's commit to add the trailer.
+                EXISTING_MSG=$(git log -1 --format='%B')
+                if ! echo "$EXISTING_MSG" | grep -q '^Repo-Sync-Origin:'; then
+                  git commit --amend --no-edit -m "${EXISTING_MSG}
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                fi
+              fi
+              # Build description via Python.
+              COMMIT_SUBJECT=$(git log -1 --format='%s' "${SOURCE_SHA}" 2>/dev/null || echo "sync")
+              COMMIT_BODY_TEXT=$(git log -1 --format='%b' "${SOURCE_SHA}" 2>/dev/null || true)
+              DESC_JSON=$(python -m repo_sync.workflows.cli build-description \
+                --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+                --commit-subject "${COMMIT_SUBJECT}" --commit-body "${COMMIT_BODY_TEXT}")
+              PR_TITLE=$(echo "$DESC_JSON" | jq -r '.title')
+              PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
+              PR_BODY="${PR_BODY}
+
+Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              git push origin "${SYNC_BRANCH}"
+              PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
+              PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+              if [ "$CHERRY_PICK_FAILED" = "true" ]; then
+                REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
+                  --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+                  --fallback-team "${ESCALATE_TO}")
+                REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
+                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+                TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --repo "${PEER_REPO}" --json body --jq '.body')
+                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" \
+                  --body "${CURRENT_BODY}
+Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+              elif [ "$IS_STACK_BOTTOM" = "true" ]; then
+                gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
+              fi
+              popd > /dev/null
+            fi
+            STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"
+          done < /tmp/unsynced_commits.txt
