@@ -38,7 +38,8 @@ class SyncAssignment:
 
     def __str__(self) -> str:
         """Format as the trailer value string."""
-        ts = self.timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+        utc_ts = self.timestamp.astimezone(timezone.utc)
+        ts = utc_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         return f"{self.username}@{ts}"
 
 
@@ -100,8 +101,13 @@ def format_origin_trailer(repo: str, sha: str) -> str:
 
 
 def format_assigned_trailer(username: str, timestamp: datetime) -> str:
-    """Format a Repo-Sync-Assigned trailer line."""
-    ts = timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Format a Repo-Sync-Assigned trailer line.
+
+    Converts the timestamp to UTC before formatting to ensure the trailing
+    'Z' is always correct.
+    """
+    utc_ts = timestamp.astimezone(timezone.utc)
+    ts = utc_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"{_ASSIGNED_PREFIX} {username}@{ts}"
 
 

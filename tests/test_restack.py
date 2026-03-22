@@ -122,6 +122,34 @@ class TestRestackPr:
         gh.update_pr_base.assert_not_called()
         gh.enable_auto_merge.assert_not_called()
 
+    def test_restack_error_on_invalid_ref(
+        self, tmp_git_repo_pair: tuple[GitOps, GitOps]
+    ) -> None:
+        """Rebase with an invalid old_base ref returns ERROR, not CONFLICT."""
+        source_git, _ = tmp_git_repo_pair
+        gh = MagicMock(spec=GhOps)
+
+        # Create a branch to restack.
+        source_git.create_branch("sync/bbb", "main")
+        make_commit(source_git, "b.txt", "b", "commit B")
+
+        # Use a nonexistent ref as the merged_pr_branch_tip.
+        outcome = restack_pr(
+            git=source_git,
+            gh=gh,
+            next_pr_branch="sync/bbb",
+            merged_pr_branch_tip="nonexistent_ref_abc123",
+            default_branch="main",
+            next_pr_number=2,
+            remote="origin",
+        )
+
+        assert outcome.result == RestackResult.ERROR
+        assert outcome.conflicting_files is None
+        # No PR operations should be performed on error.
+        gh.update_pr_base.assert_not_called()
+        gh.enable_auto_merge.assert_not_called()
+
     def test_three_pr_stack_only_next_is_restacked(
         self, tmp_git_repo_pair: tuple[GitOps, GitOps]
     ) -> None:

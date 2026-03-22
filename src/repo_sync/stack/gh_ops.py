@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from urllib.parse import quote
+
+# Duplicated from branches.py to avoid a circular import (branches imports GhOps).
+_SYNC_BRANCH_PREFIX = "repo-sync/"
 
 
 @dataclass
@@ -105,22 +109,32 @@ class GhOps:
         gh pr create does not support --json, so we capture the PR URL from
         stdout and then fetch structured data via gh pr view.
         """
-        pr_url = self._run(
-            [
-                "pr",
-                "create",
-                "--repo",
-                self.repo,
-                "--head",
-                head,
-                "--base",
-                base,
-                "--title",
-                title,
-                "--body",
-                body,
-            ]
-        )
+        # Use --body-file to avoid ARG_MAX limits for large PR descriptions
+        # (public-to-private sync copies the source PR body verbatim).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False
+        ) as f:
+            f.write(body)
+            body_file = f.name
+        try:
+            pr_url = self._run(
+                [
+                    "pr",
+                    "create",
+                    "--repo",
+                    self.repo,
+                    "--head",
+                    head,
+                    "--base",
+                    base,
+                    "--title",
+                    title,
+                    "--body-file",
+                    body_file,
+                ]
+            )
+        finally:
+            os.unlink(body_file)
         # gh pr create prints the new PR's URL to stdout.
         output = self._run(
             [
@@ -186,18 +200,29 @@ class GhOps:
         )
 
     def update_pr_body(self, pr_number: int, body: str) -> None:
-        """Update a PR's description body."""
-        self._run(
-            [
-                "pr",
-                "edit",
-                str(pr_number),
-                "--repo",
-                self.repo,
-                "--body",
-                body,
-            ]
-        )
+        """Update a PR's description body.
+
+        Uses --body-file to avoid ARG_MAX limits for large descriptions.
+        """
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False
+        ) as f:
+            f.write(body)
+            body_file = f.name
+        try:
+            self._run(
+                [
+                    "pr",
+                    "edit",
+                    str(pr_number),
+                    "--repo",
+                    self.repo,
+                    "--body-file",
+                    body_file,
+                ]
+            )
+        finally:
+            os.unlink(body_file)
 
     def request_reviewer(
         self, pr_number: int, reviewer: str
@@ -296,7 +321,7 @@ class GhOps:
                 break
             for pr in prs:
                 head_branch = pr["head"]["ref"]
-                if head_branch.startswith("repo-sync/"):
+                if head_branch.startswith(_SYNC_BRANCH_PREFIX):
                     all_sync_prs.append(
                         PullRequest(
                             number=pr["number"],
