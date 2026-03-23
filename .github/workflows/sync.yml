@@ -200,7 +200,7 @@ jobs:
                 [ -f "${AGENT_OUT}/title.txt" ] && PR_TITLE=$(cat "${AGENT_OUT}/title.txt")
                 [ -f "${AGENT_OUT}/body.txt" ] && PR_BODY=$(cat "${AGENT_OUT}/body.txt")
               fi
-              PR_BODY="${PR_BODY}\n\nRepo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               git push origin
               PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
@@ -250,7 +250,7 @@ jobs:
                 --commit-subject "${COMMIT_SUBJECT}" --commit-body "${COMMIT_BODY_TEXT}")
               PR_TITLE=$(echo "$DESC_JSON" | jq -r '.title')
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
-              PR_BODY="${PR_BODY}\n\nRepo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               git push origin "${SYNC_BRANCH}"
               PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
@@ -263,8 +263,8 @@ jobs:
                 gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
                 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
                 CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --repo "${PEER_REPO}" --json body --jq '.body')
-                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" \
-                  --body "${CURRENT_BODY}\n\nRepo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+                UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
+                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --body "${UPDATED_BODY}"
               elif [ "$IS_STACK_BOTTOM" = "true" ]; then
                 gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
               fi
