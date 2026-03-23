@@ -26,7 +26,11 @@ on:
         type: string
         default: ""
     secrets:
-      auth_token:
+      app_id:
+        description: "GitHub App ID."
+        required: true
+      app_private_key:
+        description: "GitHub App private key."
         required: true
 
 concurrency:
@@ -37,17 +41,25 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.auth_token }}
       PUBLIC_REPO: ${{ inputs.public_repo }}
       PRIVATE_REPO: ${{ inputs.private_repo }}
     steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ github.repository_owner }}
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0, token: "${{ secrets.auth_token }}" }
+        with: { fetch-depth: 0, token: "${{ steps.token.outputs.token }}" }
       - uses: actions/checkout@v4
-        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ secrets.auth_token }}" }
+        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ steps.token.outputs.token }}" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
 
       # Derive peer_repo and source_is_private from the two repo names.
       - name: Derive sync context
@@ -98,7 +110,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           path: peer
           fetch-depth: 0
-          token: ${{ secrets.auth_token }}
+          token: ${{ steps.token.outputs.token }}
 
       - name: Find existing stack top
         if: steps.unsynced.outputs.count != '0'

@@ -25,14 +25,13 @@ on:
         type: string
         default: "@oncall-client-primary"
     secrets:
-      auth_token:
-        description: "GitHub App installation token with cross-repo push and PR permissions."
+      app_id:
+        description: "GitHub App ID."
         required: true
-  # workflow_dispatch is used for stuck-stack recovery.  GitHub Actions does
-  # not support secrets under workflow_dispatch, so the dispatched run must
-  # generate its own token (e.g. via actions/create-github-app-token).  The
-  # consuming repo should store REPO_SYNC_APP_ID and
-  # REPO_SYNC_APP_PRIVATE_KEY as repo-level secrets.
+      app_private_key:
+        description: "GitHub App private key."
+        required: true
+  # workflow_dispatch is used for stuck-stack recovery.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -75,30 +74,24 @@ jobs:
       PRIVATE_REPO: ${{ inputs.private_repo }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:
-      # For workflow_dispatch, generate a token since secrets aren't available.
-      # For workflow_call, use the passed auth_token.
-      - name: Generate token (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        id: gen_token
+      # Generate a token for both workflow_call and workflow_dispatch.
+      # For workflow_call, secrets are passed from the caller.
+      # For workflow_dispatch, secrets come from the repo's own secrets.
+      - name: Generate installation token
+        id: token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.REPO_SYNC_APP_ID }}
-          private-key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.app_id || secrets.REPO_SYNC_APP_ID }}
+          private-key: ${{ secrets.app_private_key || secrets.REPO_SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-
       - name: Set GH_TOKEN
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "GH_TOKEN=${{ steps.gen_token.outputs.token }}" >> "$GITHUB_ENV"
-          else
-            echo "GH_TOKEN=${{ secrets.auth_token }}" >> "$GITHUB_ENV"
-          fi
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
 
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ env.GH_TOKEN }}
+          token: ${{ steps.token.outputs.token }}
 
       - name: Checkout repo-sync tooling
         uses: actions/checkout@v4
@@ -106,7 +99,7 @@ jobs:
           repository: warpdotdev/repo-sync
           ref: v1
           path: .repo-sync
-          token: ${{ env.GH_TOKEN }}
+          token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v5

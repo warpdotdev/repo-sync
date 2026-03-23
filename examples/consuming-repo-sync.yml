@@ -6,8 +6,9 @@
 # Prerequisites for the consuming repo:
 #   - A GitHub App installed on both repos with contents:write, pull_requests:write,
 #     and metadata:read permissions.
-#   - A GitHub App installation token stored as a repository secret (REPO_SYNC_TOKEN).
-#     Generate it using the App's ID and private key, or use a fine-grained PAT.
+#   - The App's ID and private key stored as repository secrets (REPO_SYNC_APP_ID,
+#     REPO_SYNC_APP_PRIVATE_KEY).  The reusable workflows generate short-lived
+#     installation tokens internally.
 #   - Auto-merge enabled as a repo-level setting.
 #   - Squash merge configured to preserve the PR description in the commit message.
 #   - Branch protection rules on repo-sync/* branches (only the sync workflow's
@@ -45,7 +46,8 @@ jobs:
       escalate_to: "@oncall-client-primary"
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
   # Restack: triggered when a sync PR is merged.
@@ -61,7 +63,8 @@ jobs:
       private_repo: warpdotdev/warp-internal
       escalate_to: "@oncall-client-primary"
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
   # Escalation cron: runs on schedule.
@@ -75,4 +78,5 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}

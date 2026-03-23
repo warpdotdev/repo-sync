@@ -32,8 +32,11 @@ on:
         required: true
         type: string
     secrets:
-      auth_token:
-        description: "GitHub App installation token with cross-repo push and PR permissions."
+      app_id:
+        description: "GitHub App ID."
+        required: true
+      app_private_key:
+        description: "GitHub App private key."
         required: true
 
 jobs:
@@ -44,14 +47,21 @@ jobs:
       pull-requests: write
       actions: write
     env:
-      GH_TOKEN: ${{ secrets.auth_token }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
       ESCALATE_AFTER: ${{ inputs.escalate_after }}
     steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ github.repository_owner }}
+      - run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
-        with: { token: "${{ secrets.auth_token }}" }
+        with: { token: "${{ steps.token.outputs.token }}" }
       - uses: actions/checkout@v4
-        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ secrets.auth_token }}" }
+        with: { repository: warpdotdev/repo-sync, ref: v1, path: .repo-sync, token: "${{ steps.token.outputs.token }}" }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync

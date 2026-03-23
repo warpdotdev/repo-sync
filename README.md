@@ -44,7 +44,7 @@ the marker lines and everything between them are stripped.  markers must be prop
 
 before integrating, ensure the consuming repos have:
 
-1. **a GitHub App** installed on both repos with `contents:write`, `pull_requests:write`, and `metadata:read` permissions.  store the App ID and private key as repo secrets (`REPO_SYNC_APP_ID`, `REPO_SYNC_APP_PRIVATE_KEY`).
+1. **a GitHub App** installed on both repos (and on the `repo-sync` repo itself) with `contents:write`, `pull_requests:write`, `workflows:write`, and `metadata:read` permissions.  store the App ID and private key as repo secrets (`REPO_SYNC_APP_ID`, `REPO_SYNC_APP_PRIVATE_KEY`) in both repos.  the reusable workflows generate short-lived installation tokens internally.
 2. **auto-merge enabled** as a repo-level setting.
 3. **squash merge** as the merge strategy for PRs, configured to **preserve the PR description** in the commit message.
 4. **branch protection rules** on `repo-sync/*` branches, so only the sync workflow's token can create or push to them.
@@ -114,7 +114,8 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   restack:
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
@@ -123,7 +124,8 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   escalation:
     if: github.event_name == 'schedule'
@@ -134,7 +136,8 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
     secrets:
-      auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
+      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 ```
 
 the same workflow file works in both repos -- the workflows derive which repo is which by comparing `github.repository` against the `private_repo` input.
