@@ -387,8 +387,7 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           gh pr edit "${NEXT_PR_NUMBER}" \
-            --body "${CURRENT_BODY}
-Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+            --body "${CURRENT_BODY}\n\nRepo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
           echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent-resolved conflict)."
 
       - name: Assign reviewer after agent failure
@@ -411,6 +410,5 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
           gh pr edit "${NEXT_PR_NUMBER}" \
-            --body "${CURRENT_BODY}
-Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+            --body "${CURRENT_BODY}\n\nRepo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
           echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent failed, needs manual resolution)."

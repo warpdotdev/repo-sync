@@ -160,10 +160,8 @@ jobs:
               cp -a "${SNAPSHOT_DIR}/." . && git add -A
               if git diff --cached --quiet; then popd > /dev/null; rm -rf "${SNAPSHOT_DIR}"; continue; fi
               git checkout -b "${SYNC_BRANCH}"
-              git commit -m "repo-sync: sync from private
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-              git diff "origin/${STACK_BASE_BRANCH}" HEAD -- > /tmp/diff-${SHORT_SHA}.patch
+              git commit -m "repo-sync: sync from private" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              git diff
               AGENT_OUT="/tmp/agent-out-${SHORT_SHA}"; mkdir -p "$AGENT_OUT"
               PR_TITLE="repo-sync: sync from private (${SHORT_SHA})"
               PR_BODY="repo-sync: sync from private (source: \`${SHORT_SHA}\`)"
@@ -176,10 +174,8 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 [ -f "${AGENT_OUT}/title.txt" ] && PR_TITLE=$(cat "${AGENT_OUT}/title.txt")
                 [ -f "${AGENT_OUT}/body.txt" ] && PR_BODY=$(cat "${AGENT_OUT}/body.txt")
               fi
-              PR_BODY="${PR_BODY}
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-              git push origin "${SYNC_BRANCH}"
+              PR_BODY="${PR_BODY}\n\nRepo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              git push origin
               PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
               if [ "$IS_STACK_BOTTOM" = "true" ]; then
@@ -204,9 +200,7 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 if ! oz agent run --skill warpdotdev/repo-sync:conflict-resolution \
                   --context "Conflicting files: $(git diff --name-only --diff-filter=U)" 2>/dev/null; then
                   git cherry-pick --abort 2>/dev/null || true
-                  git commit --allow-empty -m "repo-sync: cherry-pick conflict — needs manual resolution
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                  git commit --allow-empty -m "repo-sync: cherry-pick conflict — needs manual resolution" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 fi
               fi
               # Append Repo-Sync-Origin trailer to the commit regardless of
@@ -214,16 +208,12 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
               # conflicts.  This ensures the trailer is always present in the
               # commit message for loop detection.
               if [ "$CHERRY_PICK_FAILED" = "false" ]; then
-                git commit --amend -m "$(git log -1 --format='%B')
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                git commit --amend -m "$(git log -1 --format='%B')" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
               else
                 # Agent-resolved cherry-pick: amend the agent's commit to add the trailer.
                 EXISTING_MSG=$(git log -1 --format='%B')
                 if ! echo "$EXISTING_MSG" | grep -q '^Repo-Sync-Origin:'; then
-                  git commit --amend --no-edit -m "${EXISTING_MSG}
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+                  git commit --amend --no-edit -m "${EXISTING_MSG}" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 fi
               fi
               # Build description via Python.
@@ -234,9 +224,7 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 --commit-subject "${COMMIT_SUBJECT}" --commit-body "${COMMIT_BODY_TEXT}")
               PR_TITLE=$(echo "$DESC_JSON" | jq -r '.title')
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
-              PR_BODY="${PR_BODY}
-
-Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              PR_BODY="${PR_BODY}\n\nRepo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
               git push origin "${SYNC_BRANCH}"
               PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
@@ -250,8 +238,7 @@ Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
                 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
                 CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --repo "${PEER_REPO}" --json body --jq '.body')
                 gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" \
-                  --body "${CURRENT_BODY}
-Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
+                  --body "${CURRENT_BODY}\n\nRepo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
               elif [ "$IS_STACK_BOTTOM" = "true" ]; then
                 gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
               fi
