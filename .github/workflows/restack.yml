@@ -94,11 +94,15 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
+      # Extract the ref used to reference this reusable workflow.
+      - name: Determine repo-sync ref
+        id: repo_sync_ref
+        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
       - name: Checkout repo-sync tooling
         uses: actions/checkout@v4
         with:
           repository: warpdotdev/repo-sync
-          ref: v1
+          ref: ${{ steps.repo_sync_ref.outputs.ref }}
           path: .repo-sync
           token: ${{ steps.token.outputs.token }}
 

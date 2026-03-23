@@ -61,8 +61,15 @@ jobs:
       - run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with: { token: "${{ steps.token.outputs.token }}" }
+      - name: Determine repo-sync ref
+        id: repo_sync_ref
+        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        with: { repository: warpdotdev/repo-sync, ref: "${{ github.action_ref }}", path: .repo-sync, token: "${{ steps.token.outputs.token }}" }
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ steps.repo_sync_ref.outputs.ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync

@@ -54,8 +54,17 @@ jobs:
           owner: ${{ github.repository_owner }}
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, token: "${{ steps.token.outputs.token }}" }
+      # Extract the ref used to reference this reusable workflow (e.g. david/integration, v1).
+      # github.workflow_ref looks like: warpdotdev/repo-sync/.github/workflows/sync.yml@refs/heads/david/integration
+      - name: Determine repo-sync ref
+        id: repo_sync_ref
+        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        with: { repository: warpdotdev/repo-sync, ref: "${{ github.action_ref }}", path: .repo-sync, token: "${{ steps.token.outputs.token }}" }
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ steps.repo_sync_ref.outputs.ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync
