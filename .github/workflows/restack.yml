@@ -24,10 +24,11 @@ on:
         required: false
         type: string
         default: "@oncall-client-primary"
-    secrets:
       app_id:
         description: "GitHub App ID."
         required: true
+        type: string
+    secrets:
       app_private_key:
         description: "GitHub App private key."
         required: true
@@ -81,7 +82,7 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.app_id || secrets.REPO_SYNC_APP_ID }}
+          app-id: ${{ inputs.app_id }}
           private-key: ${{ secrets.app_private_key || secrets.REPO_SYNC_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
       - name: Set GH_TOKEN

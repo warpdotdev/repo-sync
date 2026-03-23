@@ -103,7 +103,7 @@ on:
   schedule:
     - cron: "*/15 * * * *"      # triggers escalation checks
 
-# store the GitHub App installation token as REPO_SYNC_TOKEN in repo secrets.
+# store REPO_SYNC_APP_ID as a variable and REPO_SYNC_APP_PRIVATE_KEY as a secret.
 # each job only runs when its trigger condition matches, so no wasted runs.
 
 jobs:
@@ -113,8 +113,8 @@ jobs:
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   restack:
@@ -123,8 +123,8 @@ jobs:
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   escalation:
@@ -135,8 +135,8 @@ jobs:
       escalate_after: "1h"
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 ```
 

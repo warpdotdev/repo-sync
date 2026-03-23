@@ -25,10 +25,11 @@ on:
         required: false
         type: string
         default: ""
-    secrets:
       app_id:
         description: "GitHub App ID."
         required: true
+        type: string
+    secrets:
       app_private_key:
         description: "GitHub App private key."
         required: true
@@ -48,7 +49,7 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.app_id }}
+          app-id: ${{ inputs.app_id }}
           private-key: ${{ secrets.app_private_key }}
           owner: ${{ github.repository_owner }}
       - uses: actions/checkout@v4

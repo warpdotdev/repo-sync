@@ -44,9 +44,9 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
       escalate_to: "@oncall-client-primary"
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
@@ -62,8 +62,8 @@ jobs:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
       escalate_to: "@oncall-client-primary"
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
@@ -77,6 +77,6 @@ jobs:
       escalate_after: "1h"
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
-      app_id: ${{ secrets.REPO_SYNC_APP_ID }}
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
