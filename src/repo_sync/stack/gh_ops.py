@@ -59,11 +59,13 @@ class GhOps:
     def pr_exists(
         self, head_branch: str, any_state: bool = False
     ) -> PullRequest | None:
-        """Check if a PR exists for the given head branch. Returns it or None.
+        """Check if a PR exists for the given head branch.  Returns it or None.
 
         By default, only checks open PRs.  Pass any_state=True to also find
-        merged or closed PRs (used by the idempotency guard to detect PRs that
-        were previously created per TECH-DESIGN.md line 37).
+        merged PRs (used by the idempotency guard to detect PRs that were
+        previously created per TECH-DESIGN.md line 37).  PRs that were closed
+        without merging are intentionally excluded so that a user can close a
+        sync PR and have the workflow recreate it on the next run.
         """
         args = [
             "pr",
@@ -77,12 +79,22 @@ class GhOps:
             "--json",
             "number,headRefName,baseRefName,title,body,url,state,autoMergeRequest",
             "--limit",
-            "1",
+            "100",
         ]
         output = self._run(args)
         prs = json.loads(output)
         if not prs:
             return None
+        # When searching all states, ignore PRs that were closed without
+        # merging.  Only open or merged PRs count as "existing" for
+        # idempotency purposes.
+        if any_state:
+            prs = [
+                p for p in prs
+                if p["state"].upper() in ("OPEN", "MERGED")
+            ]
+            if not prs:
+                return None
         pr = prs[0]
         state = pr["state"].upper()
         return PullRequest(

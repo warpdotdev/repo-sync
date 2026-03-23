@@ -49,8 +49,10 @@ def check_idempotency(
     branch_found = (
         git.branch_exists(branch) or gh.branch_exists_on_remote(branch)
     )
-    # Always use any_state=True so we find merged/closed PRs too (covers the
+    # Use any_state=True so we find merged PRs too (covers the
     # crash-between-merge-and-watermark-update edge case per TECH-DESIGN.md).
+    # PRs closed without merging are excluded by pr_exists so that a user can
+    # close a sync PR and have the next workflow run recreate it.
     existing_pr = gh.pr_exists(branch, any_state=True)
 
     if branch_found or existing_pr is not None:

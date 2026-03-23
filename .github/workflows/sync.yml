@@ -164,7 +164,7 @@ jobs:
             if gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.ref' 2>/dev/null | grep -q .; then
               STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
             if gh pr list --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" --state all \
-              --json number --jq '.[0].number // empty' 2>/dev/null | grep -q .; then
+              --json number,state --jq '[.[] | select(.state == "OPEN" or .state == "MERGED")] | .[0].number // empty' 2>/dev/null | grep -q .; then
               STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
 
             if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
