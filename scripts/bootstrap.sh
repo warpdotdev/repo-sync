@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Bootstrap script for repo-sync.
 #
-# Generates a clean snapshot of the private repo at HEAD, pushes it as the
-# initial commit to the public repo, and sets watermark tags in both repos.
+# Generates a clean snapshot of the private repo at HEAD, prepares a commit
+# in the public repo that replaces its entire tree with the clean snapshot,
+# and prints instructions for the user to review, push, and set watermarks.
 #
-# This is a one-time setup step.  After bootstrap, the regular sync workflows
-# take over.
+# The script stops before pushing so you can review the change.
+#
+# This is a one-time setup step.  After bootstrap + watermark setup, the
+# regular sync workflows take over.
 #
 # Usage:
 #   ./scripts/bootstrap.sh \
@@ -22,7 +25,7 @@
 #
 # Prerequisites:
 #   - The private repo must be checked out locally (script runs from its root).
-#   - The public repo must exist and be empty (no commits).
+#   - The public repo must exist on GitHub (can be empty or have existing content).
 #   - The stripping tool must be installed (pip install -e . from the repo-sync repo).
 #   - gh CLI must be installed.
 #   - git must be configured with user.name and user.email.
@@ -89,143 +92,113 @@ python -m repo_sync.strip.cli "${SNAPSHOT_DIR}"
 echo "Clean snapshot generated at ${SNAPSHOT_DIR}."
 
 # ---------------------------------------------------------------------------
-# Step 2: Push the snapshot as the initial commit to the public repo.
+# Step 2: Prepare the bootstrap commit in the public repo.
 # ---------------------------------------------------------------------------
-echo "Step 2: Pushing initial commit to public repo..."
+echo "Step 2: Preparing bootstrap commit in public repo..."
 WORK_DIR=$(mktemp -d)
 
-pushd "$WORK_DIR" > /dev/null
+# Check if the public repo is empty or has existing content.
+IS_EMPTY="false"
+EXISTING_COMMITS_RAW=$(gh api "/repos/${PUBLIC_REPO}/commits?per_page=1" 2>/dev/null || true)
+if ! echo "$EXISTING_COMMITS_RAW" | jq -e 'type == "array" and length > 0' > /dev/null 2>&1; then
+  IS_EMPTY="true"
+fi
 
-# Initialize a new git repo using the same default branch as the private repo.
-git init -b "${DEFAULT_BRANCH}"
+if [ "$IS_EMPTY" = "true" ]; then
+  echo "Public repo is empty.  Creating initial commit."
+  pushd "$WORK_DIR" > /dev/null
+  git init -b "${DEFAULT_BRANCH}"
+  git remote add origin "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git"
+else
+  echo "Public repo has existing content.  Cloning and replacing tree."
+  git clone "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git" "$WORK_DIR"
+  pushd "$WORK_DIR" > /dev/null
+  git checkout "${DEFAULT_BRANCH}"
+  # Remove all existing content (but keep .git/).
+  git rm -rf --quiet . 2>/dev/null || true
+fi
+
+# Copy the clean snapshot into the working tree.
 cp -a "${SNAPSHOT_DIR}/." .
 git add -A
 
-# Check if there's anything to commit.
+# Check if there are any changes to commit.
 if git diff --cached --quiet; then
-  echo "Error: clean snapshot is empty.  Nothing to push." >&2
+  echo "No changes -- the public repo already matches the clean snapshot."
   popd > /dev/null
   rm -rf "$SNAPSHOT_DIR" "$WORK_DIR"
-  exit 1
+  exit 0
 fi
 
 git commit -m "repo-sync: initial sync from private repo
 
 Repo-Sync-Origin: ${PRIVATE_REPO}@${HEAD_SHA}"
 
-INITIAL_COMMIT_SHA=$(git rev-parse HEAD)
-echo "Initial commit: ${INITIAL_COMMIT_SHA}"
-
-# Push to the public repo.
-git remote add origin "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git"
-
-# Safety check: refuse to push if the public repo already has commits.
-# The GitHub API returns a 409 for empty repos, so we treat any non-array
-# response (including errors) as "empty repo, proceed."
-EXISTING_COMMITS_RAW=$(gh api "/repos/${PUBLIC_REPO}/commits?per_page=1" 2>/dev/null || true)
-if echo "$EXISTING_COMMITS_RAW" | jq -e 'type == "array" and length > 0' > /dev/null 2>&1; then
-  echo "Error: public repo ${PUBLIC_REPO} already has commits.  Bootstrap is only for empty repos." >&2
-  echo "If you want to overwrite, delete the repo's content first." >&2
-  popd > /dev/null
-  rm -rf "$SNAPSHOT_DIR" "$WORK_DIR"
-  exit 1
-fi
-
-git push -u origin "${DEFAULT_BRANCH}"
-echo "Pushed to ${PUBLIC_REPO}/${DEFAULT_BRANCH}."
+BOOTSTRAP_COMMIT_SHA=$(git rev-parse HEAD)
+echo "Bootstrap commit: ${BOOTSTRAP_COMMIT_SHA}"
 
 popd > /dev/null
 
 # ---------------------------------------------------------------------------
-# Step 3: Set watermark tag in the public repo.
-# The watermark points to the initial commit in the public repo.
+# Step 3: Print review and next-steps instructions.
 # ---------------------------------------------------------------------------
-echo "Step 3: Setting watermark in public repo..."
-WATERMARK_TAG="repo-sync/watermark/private-to-public"
-
-# Get the actual commit SHA on the public repo (after push).
-PUBLIC_HEAD_SHA=$(gh api "/repos/${PUBLIC_REPO}/git/ref/heads/${DEFAULT_BRANCH}" \
-  --jq '.object.sha')
-
-# Create the watermark tag.  Try POST (create) first; if the tag already
-# exists, fall back to PATCH (update).
-if ! gh api -X POST "/repos/${PUBLIC_REPO}/git/refs" \
-    -f ref="refs/tags/${WATERMARK_TAG}" \
-    -f sha="${PUBLIC_HEAD_SHA}" > /dev/null 2>&1; then
-  gh api -X PATCH "/repos/${PUBLIC_REPO}/git/refs/tags/${WATERMARK_TAG}" \
-    -f sha="${PUBLIC_HEAD_SHA}" \
-    -F force=true > /dev/null
-fi
-
-echo "Watermark '${WATERMARK_TAG}' set in ${PUBLIC_REPO} -> ${PUBLIC_HEAD_SHA}."
-
-# ---------------------------------------------------------------------------
-# Step 4: Set watermark tag in the private repo.
-# Use git's empty tree SHA as a sentinel — there are no public commits to
-# sync back yet.  The public-to-private workflow will see this and know that
-# the initial public commit (which has a Repo-Sync-Origin trailer) should be
-# skipped.
-# ---------------------------------------------------------------------------
-echo "Step 4: Setting watermark in private repo..."
-PRIVATE_WATERMARK_TAG="repo-sync/watermark/public-to-private"
-
-# The sentinel: we create a lightweight tag pointing to the public repo's
-# initial commit.  Since that commit has a Repo-Sync-Origin trailer, the
-# public-to-private workflow will recognize it and skip it.
-#
-# We need to set this in the private repo.  The watermark points to the
-# public repo's initial commit, and the Repo-Sync-Origin trailer on that
-# commit tells the workflow that everything up to HEAD_SHA has been synced.
-#
-# Since the watermark tag for public-to-private lives in the private repo
-# (the target repo for that direction), we need to create a commit object
-# in the private repo that has the right trailer.  We'll create a tag
-# pointing to a specially-crafted commit.
-#
-# Simplest approach: create a lightweight tag pointing to the current HEAD
-# of the private repo.  The initial public commit already has
-# Repo-Sync-Origin: <private-repo>@<HEAD>, so the public-to-private
-# workflow will look at the public repo's HEAD and see that the last commit
-# is sync-originated.  But the watermark is read differently for the reverse
-# direction — it needs to point to the last synced PUBLIC commit.
-#
-# For the initial bootstrap, we tag the public repo's initial commit in the
-# private repo's watermark.  We use the GitHub API to create a commit object
-# in the private repo that carries the right trailer.
-BOOTSTRAP_MSG="repo-sync: bootstrap sentinel
-
-Repo-Sync-Origin: ${PUBLIC_REPO}@${PUBLIC_HEAD_SHA}"
-
-# Create a commit object in the private repo using the tree of the current HEAD.
-PRIVATE_HEAD_SHA=$(gh api "/repos/${PRIVATE_REPO}/git/ref/heads/$(gh api "/repos/${PRIVATE_REPO}" --jq '.default_branch')" \
-  --jq '.object.sha')
-PRIVATE_TREE=$(gh api "/repos/${PRIVATE_REPO}/git/commits/${PRIVATE_HEAD_SHA}" \
-  --jq '.tree.sha')
-
-SENTINEL_COMMIT=$(gh api -X POST "/repos/${PRIVATE_REPO}/git/commits" \
-  -f message="${BOOTSTRAP_MSG}" \
-  -f tree="${PRIVATE_TREE}" \
-  -f "parents[]=${PRIVATE_HEAD_SHA}" \
-  --jq '.sha')
-
-# Create the watermark tag.  Try POST first; fall back to PATCH.
-if ! gh api -X POST "/repos/${PRIVATE_REPO}/git/refs" \
-    -f ref="refs/tags/${PRIVATE_WATERMARK_TAG}" \
-    -f sha="${SENTINEL_COMMIT}" > /dev/null 2>&1; then
-  gh api -X PATCH "/repos/${PRIVATE_REPO}/git/refs/tags/${PRIVATE_WATERMARK_TAG}" \
-    -f sha="${SENTINEL_COMMIT}" \
-    -F force=true > /dev/null
-fi
-
-echo "Watermark '${PRIVATE_WATERMARK_TAG}' set in ${PRIVATE_REPO} -> ${SENTINEL_COMMIT}."
-
-# ---------------------------------------------------------------------------
-# Cleanup.
-# ---------------------------------------------------------------------------
-rm -rf "$SNAPSHOT_DIR" "$WORK_DIR"
-
 echo ""
-echo "=== Bootstrap complete ==="
-echo "Public repo ${PUBLIC_REPO} has been initialized with a clean snapshot."
-echo "Watermarks have been set in both repos."
-echo "The regular sync workflows can now take over."
+echo "=========================================================================="
+echo "  Bootstrap commit is ready for review."
+echo "=========================================================================="
+echo ""
+echo "The commit has been prepared locally in:"
+echo "  ${WORK_DIR}"
+echo ""
+echo "--- Review the changes: ---"
+echo ""
+if [ "$IS_EMPTY" = "true" ]; then
+  echo "  cd ${WORK_DIR} && git log -1"
+  echo "  cd ${WORK_DIR} && git diff --stat HEAD"
+else
+  echo "  cd ${WORK_DIR} && git log -1"
+  echo "  cd ${WORK_DIR} && git diff HEAD~1 --stat"
+  echo "  cd ${WORK_DIR} && git diff HEAD~1"
+fi
+echo ""
+echo "--- Push (after reviewing): ---"
+echo ""
+if [ "$IS_EMPTY" = "true" ]; then
+  echo "  cd ${WORK_DIR} && git push -u origin ${DEFAULT_BRANCH}"
+else
+  echo "  cd ${WORK_DIR} && git push origin ${DEFAULT_BRANCH}"
+fi
+echo ""
+echo "--- Set watermark tags (after pushing): ---"
+echo ""
+echo "Run these commands to set the watermark tags that the sync workflows need."
+echo "You can use the same token you used for bootstrap."
+echo ""
+
+# Public repo watermark: points to the bootstrap commit.
+echo "  # Set watermark in public repo (private-to-public direction)."
+echo "  PUBLIC_HEAD=\$(gh api /repos/${PUBLIC_REPO}/git/ref/heads/${DEFAULT_BRANCH} --jq '.object.sha')"
+echo "  gh api -X POST /repos/${PUBLIC_REPO}/git/refs -f ref=refs/tags/repo-sync/watermark/private-to-public -f sha=\${PUBLIC_HEAD} 2>/dev/null \\"
+echo "    || gh api -X PATCH /repos/${PUBLIC_REPO}/git/refs/tags/repo-sync/watermark/private-to-public -f sha=\${PUBLIC_HEAD} -F force=true"
+echo ""
+
+# Private repo watermark: a sentinel commit with the Repo-Sync-Origin trailer
+# so the public-to-private workflow knows the bootstrap commit is already synced.
+echo "  # Set watermark in private repo (public-to-private direction)."
+echo "  PRIVATE_HEAD=\$(gh api /repos/${PRIVATE_REPO}/git/ref/heads/${DEFAULT_BRANCH} --jq '.object.sha')"
+echo "  PRIVATE_TREE=\$(gh api /repos/${PRIVATE_REPO}/git/commits/\${PRIVATE_HEAD} --jq '.tree.sha')"
+echo "  SENTINEL=\$(gh api -X POST /repos/${PRIVATE_REPO}/git/commits \\"
+echo "    -f message='repo-sync: bootstrap sentinel' \\"
+echo "    -f tree=\${PRIVATE_TREE} \\"
+echo "    -f 'parents[]=\${PRIVATE_HEAD}' \\"
+echo "    --jq '.sha')"
+echo "  # Note: the sentinel commit message should include the trailer."
+echo "  # The above is simplified; see docs/TECH-DESIGN.md for the full trailer format."
+echo "  gh api -X POST /repos/${PRIVATE_REPO}/git/refs -f ref=refs/tags/repo-sync/watermark/public-to-private -f sha=\${SENTINEL} 2>/dev/null \\"
+echo "    || gh api -X PATCH /repos/${PRIVATE_REPO}/git/refs/tags/repo-sync/watermark/public-to-private -f sha=\${SENTINEL} -F force=true"
+echo ""
+echo "--- Cleanup (after setting watermarks): ---"
+echo ""
+echo "  rm -rf ${WORK_DIR} ${SNAPSHOT_DIR}"
+echo ""
+echo "NOTE: Do not delete the directories above until you have pushed and set watermarks."
