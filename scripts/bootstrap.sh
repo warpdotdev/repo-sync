@@ -63,6 +63,7 @@ if [ -z "$PRIVATE_REPO" ] || [ -z "$PUBLIC_REPO" ] || [ -z "$TOKEN" ]; then
 fi
 
 export GH_TOKEN="$TOKEN"
+export GH_PAGER="cat"
 HEAD_SHA=$(git rev-parse HEAD)
 SHORT_SHA="${HEAD_SHA:0:7}"
 
@@ -146,18 +147,14 @@ WATERMARK_TAG="repo-sync/watermark/private-to-public"
 PUBLIC_HEAD_SHA=$(gh api "/repos/${PUBLIC_REPO}/git/ref/heads/${DEFAULT_BRANCH}" \
   --jq '.object.sha')
 
-# Create or update the watermark tag.
-EXISTING_TAG=$(gh api "/repos/${PUBLIC_REPO}/git/ref/tags/${WATERMARK_TAG}" \
-  --jq '.ref' 2>/dev/null || true)
-
-if [ -n "$EXISTING_TAG" ]; then
+# Create the watermark tag.  Try POST (create) first; if the tag already
+# exists, fall back to PATCH (update).
+if ! gh api -X POST "/repos/${PUBLIC_REPO}/git/refs" \
+    -f ref="refs/tags/${WATERMARK_TAG}" \
+    -f sha="${PUBLIC_HEAD_SHA}" > /dev/null 2>&1; then
   gh api -X PATCH "/repos/${PUBLIC_REPO}/git/refs/tags/${WATERMARK_TAG}" \
     -f sha="${PUBLIC_HEAD_SHA}" \
-    -F force=true
-else
-  gh api -X POST "/repos/${PUBLIC_REPO}/git/refs" \
-    -f ref="refs/tags/${WATERMARK_TAG}" \
-    -f sha="${PUBLIC_HEAD_SHA}"
+    -F force=true > /dev/null
 fi
 
 echo "Watermark '${WATERMARK_TAG}' set in ${PUBLIC_REPO} -> ${PUBLIC_HEAD_SHA}."
@@ -211,18 +208,13 @@ SENTINEL_COMMIT=$(gh api -X POST "/repos/${PRIVATE_REPO}/git/commits" \
   -f "parents[]=${PRIVATE_HEAD_SHA}" \
   --jq '.sha')
 
-# Create or update the watermark tag.
-EXISTING_PRIVATE_TAG=$(gh api "/repos/${PRIVATE_REPO}/git/ref/tags/${PRIVATE_WATERMARK_TAG}" \
-  --jq '.ref' 2>/dev/null || true)
-
-if [ -n "$EXISTING_PRIVATE_TAG" ]; then
+# Create the watermark tag.  Try POST first; fall back to PATCH.
+if ! gh api -X POST "/repos/${PRIVATE_REPO}/git/refs" \
+    -f ref="refs/tags/${PRIVATE_WATERMARK_TAG}" \
+    -f sha="${SENTINEL_COMMIT}" > /dev/null 2>&1; then
   gh api -X PATCH "/repos/${PRIVATE_REPO}/git/refs/tags/${PRIVATE_WATERMARK_TAG}" \
     -f sha="${SENTINEL_COMMIT}" \
-    -F force=true
-else
-  gh api -X POST "/repos/${PRIVATE_REPO}/git/refs" \
-    -f ref="refs/tags/${PRIVATE_WATERMARK_TAG}" \
-    -f sha="${SENTINEL_COMMIT}"
+    -F force=true > /dev/null
 fi
 
 echo "Watermark '${PRIVATE_WATERMARK_TAG}' set in ${PRIVATE_REPO} -> ${SENTINEL_COMMIT}."
