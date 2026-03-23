@@ -67,7 +67,7 @@ this:
 - checks that the public repo has no existing commits (refuses to overwrite)
 - sets watermark tags in both repos so the sync workflows know where to start
 
-the token must have `contents:write` and `pull_requests:write` on both repos.  you can generate one by creating a GitHub App installation token (recommended) or using a fine-grained PAT for one-time use.
+the token must have `contents:write`, `pull_requests:write`, and `workflows:write` on both repos (the `workflows` scope is needed because the repo may contain `.github/workflows/` files).  you can generate one by creating a GitHub App installation token (recommended) or using a fine-grained PAT for one-time use.
 
 ### step 2: add the CI validation action (private repo)
 

@@ -13,7 +13,9 @@
 #     --public-repo <owner/repo> \
 #     --token <github-token>
 #
-# The token must have contents:write and pull_requests:write on both repos.
+# The token must have contents:write, pull_requests:write, and workflows:write
+# on both repos.  The workflows:write scope is needed because the private repo
+# may contain .github/workflows/ files that get synced to the public repo.
 # You can generate one by:
 #   - Creating a GitHub App installation token (recommended for production).
 #   - Using a fine-grained PAT with the required permissions (simpler for one-time use).
@@ -116,9 +118,11 @@ echo "Initial commit: ${INITIAL_COMMIT_SHA}"
 # Push to the public repo.
 git remote add origin "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git"
 
-# Safety check: refuse to force-push if the public repo already has commits.
-EXISTING_COMMITS=$(gh api "/repos/${PUBLIC_REPO}/commits?per_page=1" --jq 'length' 2>/dev/null || echo "0")
-if [ "$EXISTING_COMMITS" -gt 0 ]; then
+# Safety check: refuse to push if the public repo already has commits.
+# The GitHub API returns a 409 for empty repos, so we treat any non-array
+# response (including errors) as "empty repo, proceed."
+EXISTING_COMMITS_RAW=$(gh api "/repos/${PUBLIC_REPO}/commits?per_page=1" 2>/dev/null || true)
+if echo "$EXISTING_COMMITS_RAW" | jq -e 'type == "array" and length > 0' > /dev/null 2>&1; then
   echo "Error: public repo ${PUBLIC_REPO} already has commits.  Bootstrap is only for empty repos." >&2
   echo "If you want to overwrite, delete the repo's content first." >&2
   popd > /dev/null
