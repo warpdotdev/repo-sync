@@ -70,6 +70,10 @@ jobs:
       - run: pip install -e .repo-sync
       - name: Set GH_TOKEN
         run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
+      - name: Configure git identity
+        run: |
+          git config --global user.name "repo-sync[bot]"
+          git config --global user.email "repo-sync[bot]@users.noreply.github.com"
 
       # Derive peer_repo and source_is_private from the two repo names.
       - name: Derive sync context

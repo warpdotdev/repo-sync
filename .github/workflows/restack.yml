@@ -115,6 +115,11 @@ jobs:
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "repo-sync[bot]"
+          git config --global user.email "repo-sync[bot]@users.noreply.github.com"
+
       # Derive peer_repo and source_is_private from the two repo names.
       - name: Derive sync context
         id: context
