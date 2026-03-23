@@ -89,8 +89,8 @@ jobs:
     if: inputs.action == 'sync'
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@david/integration
     with:
-      peer_repo: warpdotdev/repo-sync-test-public   # adjust for the other repo
-      source_is_private: true                        # false for the public repo's copy
+      public_repo: warpdotdev/repo-sync-test-public
+      private_repo: warpdotdev/repo-sync-test-private
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
@@ -98,8 +98,8 @@ jobs:
     if: inputs.action == 'restack'
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@david/integration
     with:
-      peer_repo: warpdotdev/repo-sync-test-public
-      source_is_private: true
+      public_repo: warpdotdev/repo-sync-test-public
+      private_repo: warpdotdev/repo-sync-test-private
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
@@ -109,13 +109,13 @@ jobs:
     with:
       escalate_to: "@oncall-client-primary"
       escalate_after: "5m"
-      peer_repo: warpdotdev/repo-sync-test-public
-      source_is_private: true
+      public_repo: warpdotdev/repo-sync-test-public
+      private_repo: warpdotdev/repo-sync-test-private
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 ```
 
-note: use `@david/integration` as the ref (not `@v1`) to test the current branch.
+note: use `@david/integration` as the ref (not `@v1`) to test the current branch.  the same workflow file works in both repos -- the workflows derive direction from `github.repository` vs `private_repo`.
 
 ---
 
@@ -225,7 +225,7 @@ note: use `@david/integration` as the ref (not `@v1`) to test the current branch
    echo "contributed by the community" > community.txt
    git add community.txt && git commit -m "Add community contribution" && git push
    ```
-3. trigger the sync workflow in the **public** repo (action: sync, with `source_is_private: false`).
+3. trigger the sync workflow in the **public** repo (action: sync).  the workflow derives `source_is_private: false` automatically since `github.repository` != `private_repo`.
 
 **check:**
 - [ ] a sync PR appears in `repo-sync-test-private`

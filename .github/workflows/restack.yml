@@ -11,14 +11,14 @@ name: restack
 on:
   workflow_call:
     inputs:
-      peer_repo:
-        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
         required: true
         type: string
-      source_is_private:
-        description: "If true, this repo is private (determines watermark direction)."
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
         required: true
-        type: boolean
+        type: string
       escalate_to:
         description: "GitHub team or user to escalate to on timeout."
         required: false
@@ -39,14 +39,14 @@ on:
         description: "Stuck PR number to restack."
         required: true
         type: string
-      peer_repo:
-        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
         required: true
         type: string
-      source_is_private:
-        description: "If true, this repo is private (determines watermark direction)."
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
         required: true
-        type: boolean
+        type: string
       escalate_to:
         description: "GitHub team or user to escalate to on timeout."
         required: false
@@ -71,8 +71,8 @@ jobs:
       contents: write
       pull-requests: write
     env:
-      PEER_REPO: ${{ inputs.peer_repo }}
-      SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
+      PUBLIC_REPO: ${{ inputs.public_repo }}
+      PRIVATE_REPO: ${{ inputs.private_repo }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:
       # For workflow_dispatch, generate a token since secrets aren't available.
@@ -115,6 +115,18 @@ jobs:
 
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
+
+      # Derive peer_repo and source_is_private from the two repo names.
+      - name: Derive sync context
+        id: context
+        run: |
+          if [ "${{ github.repository }}" = "${PRIVATE_REPO}" ]; then
+            echo "source_is_private=true" >> "$GITHUB_OUTPUT"
+            echo "peer_repo=${PUBLIC_REPO}" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_is_private=false" >> "$GITHUB_OUTPUT"
+            echo "peer_repo=${PRIVATE_REPO}" >> "$GITHUB_OUTPUT"
+          fi
 
       # Identify the PR context FIRST so we can use the stuck PR's head
       # branch for direction detection (avoids the fallback inversion bug).
@@ -170,7 +182,7 @@ jobs:
             HEAD_BRANCH="${{ github.event.pull_request.head.ref || '' }}"
           fi
           PRIVATE_FLAG=""
-          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
           python -m repo_sync.workflows.cli detect-direction \
             --head-branch "${HEAD_BRANCH}" \
             $PRIVATE_FLAG

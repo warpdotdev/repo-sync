@@ -40,8 +40,8 @@ jobs:
     if: github.event_name == 'push'
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
-      peer_repo: warpdotdev/warp-public
-      source_is_private: true
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
       escalate_to: "@oncall-client-primary"
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
     secrets:
@@ -57,8 +57,8 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'repo-sync/')
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
-      peer_repo: warpdotdev/warp-public
-      source_is_private: true
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
       escalate_to: "@oncall-client-primary"
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
@@ -72,7 +72,7 @@ jobs:
     with:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
-      peer_repo: warpdotdev/warp-public
-      source_is_private: true
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}

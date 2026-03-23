@@ -23,14 +23,14 @@ on:
         description: "Duration before escalation (e.g. 5m, 1h, 30m)."
         required: true
         type: string
-      peer_repo:
-        description: "Counterpart repo (needed for stuck-stack restack dispatch)."
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
         required: true
         type: string
-      source_is_private:
-        description: "If true, source repo is private."
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
         required: true
-        type: boolean
+        type: string
     secrets:
       auth_token:
         description: "GitHub App installation token with cross-repo push and PR permissions."
@@ -103,8 +103,8 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
                   echo "PR #${PR_NUMBER}: stuck stack. Dispatching restack."
                   gh workflow run restack.yml \
                     -f pr_number="${PR_NUMBER}" \
-                    -f peer_repo="${{ inputs.peer_repo }}" \
-                    -f source_is_private="${{ inputs.source_is_private }}" \
+                    -f peer_repo="${{ inputs.public_repo }}" \
+                    -f source_is_private="${{ inputs.private_repo }}" \
                     -f escalate_to="${ESCALATE_TO}" \
                     2>/dev/null || echo "Warning: could not dispatch restack for PR #${PR_NUMBER}."
                   ;;

@@ -111,8 +111,8 @@ jobs:
     if: github.event_name == 'push'
     uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
     with:
-      peer_repo: warpdotdev/warp-public     # the other repo
-      source_is_private: true               # false for the public repo's copy
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
@@ -120,8 +120,8 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
-      peer_repo: warpdotdev/warp-public
-      source_is_private: true
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 
@@ -131,13 +131,13 @@ jobs:
     with:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
-      peer_repo: warpdotdev/warp-public
-      source_is_private: true
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
     secrets:
       auth_token: ${{ secrets.REPO_SYNC_TOKEN }}
 ```
 
-the public repo gets the same workflow, but with `source_is_private: false` and `peer_repo` pointing to the private repo.
+the same workflow file works in both repos -- the workflows derive which repo is which by comparing `github.repository` against the `private_repo` input.
 
 ### step 4: verify
 

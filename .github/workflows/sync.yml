@@ -7,14 +7,14 @@ name: sync
 on:
   workflow_call:
     inputs:
-      peer_repo:
-        description: "Counterpart repo (e.g. warpdotdev/warp-public)."
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
         required: true
         type: string
-      source_is_private:
-        description: "If true, strip private code before syncing."
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
         required: true
-        type: boolean
+        type: string
       escalate_to:
         description: "GitHub team or user to escalate to on timeout."
         required: false
@@ -30,7 +30,7 @@ on:
         required: true
 
 concurrency:
-  group: repo-sync-${{ inputs.source_is_private && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ inputs.peer_repo }}
+  group: repo-sync-${{ github.repository == inputs.private_repo && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
   cancel-in-progress: false
 
 jobs:
@@ -38,8 +38,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.auth_token }}
-      PEER_REPO: ${{ inputs.peer_repo }}
-      SOURCE_IS_PRIVATE: ${{ inputs.source_is_private }}
+      PUBLIC_REPO: ${{ inputs.public_repo }}
+      PRIVATE_REPO: ${{ inputs.private_repo }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, token: "${{ secrets.auth_token }}" }
@@ -49,11 +49,23 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e .repo-sync
 
+      # Derive peer_repo and source_is_private from the two repo names.
+      - name: Derive sync context
+        id: context
+        run: |
+          if [ "${{ github.repository }}" = "${PRIVATE_REPO}" ]; then
+            echo "source_is_private=true" >> "$GITHUB_OUTPUT"
+            echo "peer_repo=${PUBLIC_REPO}" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_is_private=false" >> "$GITHUB_OUTPUT"
+            echo "peer_repo=${PRIVATE_REPO}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Detect direction
         id: direction
         run: |
           PRIVATE_FLAG=""
-          [ "$SOURCE_IS_PRIVATE" = "true" ] && PRIVATE_FLAG="--source-is-private"
+          [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
           python -m repo_sync.workflows.cli detect-direction $PRIVATE_FLAG
 
       # No early-exit loop check here.  enumerate_unsynced_commits already
@@ -66,7 +78,7 @@ jobs:
         id: watermark
         run: |
           python -m repo_sync.workflows.cli read-watermark \
-            --peer-repo "${PEER_REPO}" \
+            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
             --direction "${{ steps.direction.outputs.direction }}"
 
       - name: List unsynced commits
@@ -82,7 +94,7 @@ jobs:
         if: steps.unsynced.outputs.count != '0'
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.peer_repo }}
+          repository: ${{ steps.context.outputs.peer_repo }}
           ref: ${{ github.event.repository.default_branch }}
           path: peer
           fetch-depth: 0
@@ -93,7 +105,7 @@ jobs:
         id: stack_top
         run: |
           python -m repo_sync.workflows.cli find-stack-top \
-            --peer-repo "${PEER_REPO}" \
+            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
             --direction "${{ steps.direction.outputs.direction }}"
 
       # Per-commit sync PR creation.  The loop and git/gh side effects remain
@@ -110,7 +122,10 @@ jobs:
           set -euo pipefail
           DIRECTION="${{ steps.direction.outputs.direction }}"
           BRANCH_PREFIX="${{ steps.direction.outputs.branch_prefix }}"
-          STACK_BASE_BRANCH="${STACK_TOP:-${PEER_DEFAULT_BRANCH}}"
+          PEER_REPO="${{ steps.context.outputs.peer_repo }}"
+          SOURCE_IS_PRIVATE="${{ steps.context.outputs.source_is_private }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          STACK_BASE_BRANCH="${STACK_TOP:-${DEFAULT_BRANCH}}"
           IS_STACK_BOTTOM="true"
           [ -n "${STACK_TOP:-}" ] && IS_STACK_BOTTOM="false"
 
