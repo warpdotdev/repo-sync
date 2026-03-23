@@ -35,6 +35,11 @@ on:
         description: "GitHub App ID."
         required: true
         type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use."
+        required: false
+        type: string
+        default: "main"
     secrets:
       app_private_key:
         description: "GitHub App private key."
@@ -61,13 +66,10 @@ jobs:
       - run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with: { token: "${{ steps.token.outputs.token }}" }
-      - name: Determine repo-sync ref
-        id: repo_sync_ref
-        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: warpdotdev/repo-sync
-          ref: ${{ steps.repo_sync_ref.outputs.ref }}
+          ref: ${{ inputs.repo_sync_ref }}
           path: .repo-sync
           token: ${{ steps.token.outputs.token }}
       - uses: actions/setup-python@v5

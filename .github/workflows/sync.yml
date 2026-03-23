@@ -29,6 +29,11 @@ on:
         description: "GitHub App ID."
         required: true
         type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use (e.g. v1, main, david/integration)."
+        required: false
+        type: string
+        default: "main"
     secrets:
       app_private_key:
         description: "GitHub App private key."
@@ -54,15 +59,10 @@ jobs:
           owner: ${{ github.repository_owner }}
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, token: "${{ steps.token.outputs.token }}" }
-      # Extract the ref used to reference this reusable workflow (e.g. david/integration, v1).
-      # github.workflow_ref looks like: warpdotdev/repo-sync/.github/workflows/sync.yml@refs/heads/david/integration
-      - name: Determine repo-sync ref
-        id: repo_sync_ref
-        run: echo "ref=$(echo '${{ github.workflow_ref }}' | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: warpdotdev/repo-sync
-          ref: ${{ steps.repo_sync_ref.outputs.ref }}
+          ref: ${{ inputs.repo_sync_ref }}
           path: .repo-sync
           token: ${{ steps.token.outputs.token }}
       - uses: actions/setup-python@v5
