@@ -103,8 +103,8 @@ Repo-Sync-Assigned: ${REVIEWER}@${TIMESTAMP}"
                   echo "PR #${PR_NUMBER}: stuck stack. Dispatching restack."
                   gh workflow run restack.yml \
                     -f pr_number="${PR_NUMBER}" \
-                    -f peer_repo="${{ inputs.public_repo }}" \
-                    -f source_is_private="${{ inputs.private_repo }}" \
+                    -f public_repo="${{ inputs.public_repo }}" \
+                    -f private_repo="${{ inputs.private_repo }}" \
                     -f escalate_to="${ESCALATE_TO}" \
                     2>/dev/null || echo "Warning: could not dispatch restack for PR #${PR_NUMBER}."
                   ;;
