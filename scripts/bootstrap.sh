@@ -190,7 +190,7 @@ echo "  PRIVATE_TREE=\$(gh api /repos/${PRIVATE_REPO}/git/commits/\${PRIVATE_HEA
 echo "  SENTINEL=\$(gh api -X POST /repos/${PRIVATE_REPO}/git/commits \\"
 echo "    -f message='repo-sync: bootstrap sentinel' \\"
 echo "    -f tree=\${PRIVATE_TREE} \\"
-echo "    -f 'parents[]=\${PRIVATE_HEAD}' \\"
+echo "    -f \"parents[]=\${PRIVATE_HEAD}\" \\"
 echo "    --jq '.sha')"
 echo "  # Note: the sentinel commit message should include the trailer."
 echo "  # The above is simplified; see docs/TECH-DESIGN.md for the full trailer format."
