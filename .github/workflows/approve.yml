@@ -106,11 +106,32 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
+      # Guard: each sync PR should have exactly one commit.  If it has
+      # more, it hasn't been rebased yet (e.g., GitHub auto-retargeted
+      # the PR after the base branch was deleted).  Skip and let the
+      # restack workflow handle it.  This also prevents approving a PR
+      # where an agent or human added a conflict resolution commit.
+      # ---------------------------------------------------------------
+      - name: Check commit count
+        if: steps.skip_check.outputs.skip == 'false'
+        id: commit_check
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          COMMIT_COUNT=$(gh pr view "${PR_NUMBER}" --json commits --jq '.commits | length')
+          echo "PR has ${COMMIT_COUNT} commit(s)."
+          if [ "$COMMIT_COUNT" -ne 1 ]; then
+            echo "PR has ${COMMIT_COUNT} commits (expected 1). Needs rebase. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------------------------------------------------------------
       # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
       # status (GitHub computes mergeability asynchronously).
       # ---------------------------------------------------------------
       - name: Check mergeability
-        if: steps.skip_check.outputs.skip == 'false'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false'
         id: mergeable
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
@@ -145,14 +166,14 @@ jobs:
       # Clean path: approve and enable auto-merge (API-only, no git ops).
       # ---------------------------------------------------------------
       - name: Approve PR (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh pr review "${PR_NUMBER}" --approve \
             --body "Clean sync — no conflicts." || true
 
       - name: Enable auto-merge (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh pr merge "${PR_NUMBER}" --auto --squash \
@@ -163,14 +184,14 @@ jobs:
       # invoke the agent, assign a reviewer.
       # ---------------------------------------------------------------
       - name: Checkout repo
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
       - name: Checkout repo-sync tooling
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         uses: actions/checkout@v4
         with:
           repository: warpdotdev/repo-sync
@@ -179,22 +200,22 @@ jobs:
           token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
       - name: Install repo-sync tools
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: pip install -e .repo-sync
 
       - name: Configure git identity
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: |
           git config --global user.name "repo-sync-approver-bot"
           git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
 
       - name: Label conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh label create "repo-sync:conflict" --color "D93F0B" \
@@ -202,7 +223,7 @@ jobs:
           gh pr edit "${PR_NUMBER}" --add-label "repo-sync:conflict"
 
       - name: Rebase and resolve conflicts via agent
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         id: conflict_resolution
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
@@ -243,13 +264,13 @@ jobs:
           echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
 
       - name: Push agent resolution
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
         run: |
           PR_BRANCH="${{ github.event.pull_request.head.ref }}"
           git push origin "${PR_BRANCH}" --force-with-lease
 
       - name: Assign reviewer after conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_needed == 'true'
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_needed == 'true'
         run: |
           # Conflict-resolved PRs always require human sign-off.
           # The bot does NOT approve — a human must approve before merge.

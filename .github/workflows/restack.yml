@@ -247,11 +247,25 @@ jobs:
           else
             # Normal path: find the PR whose base branch is the just-merged branch.
             MERGED_BRANCH="${{ steps.merged_pr.outputs.merged_head_branch }}"
+            DIRECTION="${{ steps.direction.outputs.direction }}"
             NEXT_PR=$(gh pr list \
               --state open \
               --base "${MERGED_BRANCH}" \
               --json number,headRefName \
               --jq '.[0].number // empty')
+
+            # Fallback: if GitHub auto-retargeted the next PR to the default
+            # branch (because the merged branch was auto-deleted), search for
+            # the oldest open repo-sync/ PR targeting the default branch that
+            # still needs rebasing (more than one commit).
+            if [ -z "$NEXT_PR" ]; then
+              BRANCH_PREFIX="repo-sync/${DIRECTION}/"
+              NEXT_PR=$(gh pr list \
+                --state open \
+                --base "${DEFAULT_BRANCH}" \
+                --json number,headRefName,commits \
+                --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}\")) | select(.commits | length > 1)] | sort_by(.number) | .[0].number // empty")
+            fi
 
             if [ -z "$NEXT_PR" ]; then
               echo "No next PR in stack. Stack is fully merged."
