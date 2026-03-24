@@ -174,10 +174,9 @@ jobs:
               # the sync branch has likely been deleted.
               continue
             fi
-            # No PR found — check if the branch exists (e.g., pushed but
-            # PR creation failed on a previous run).
-            if gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.ref' 2>/dev/null | grep -q .; then
-              STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
+            # No PR found — proceed with the full sync flow.  If a branch
+            # exists from a previous interrupted run (pushed but PR creation
+            # failed), the push step will handle it.
 
             if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
               # --- Private-to-public: delta between consecutive clean snapshots. ---
@@ -235,7 +234,7 @@ jobs:
               pushd peer > /dev/null
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
-              git checkout -b "${SYNC_BRANCH}"
+              git checkout -B "${SYNC_BRANCH}"
               git remote add diff_source "${DIFF_REPO}" 2>/dev/null || git remote set-url diff_source "${DIFF_REPO}"
               git fetch diff_source
               if ! git cherry-pick "${DIFF_COMMIT}" --allow-empty 2>/tmp/cherry-pick-err.txt; then
@@ -278,7 +277,23 @@ jobs:
                 [ -f "${AGENT_OUT}/body.txt" ] && PR_BODY=$(cat "${AGENT_OUT}/body.txt")
               fi
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
-              git push origin "${SYNC_BRANCH}"
+              # Push the branch.  If it already exists on the remote (from a
+              # previous interrupted run), verify the content matches before
+              # skipping the push.  Hard-fail if the content differs.
+              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
+              if [ -n "$REMOTE_REF" ]; then
+                LOCAL_TREE=$(git rev-parse HEAD^{tree})
+                REMOTE_TREE=$(git -C peer rev-parse "origin/${SYNC_BRANCH}^{tree}" 2>/dev/null || true)
+                if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
+                  echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
+                else
+                  popd > /dev/null
+                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content. Manual intervention required."
+                  exit 1
+                fi
+              else
+                git push origin "${SYNC_BRANCH}"
+              fi
               gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
@@ -292,7 +307,7 @@ jobs:
               git fetch source
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
-              git checkout -b "${SYNC_BRANCH}"
+              git checkout -B "${SYNC_BRANCH}"
               # Cherry-pick the public commit.  If this fails, it's due to
               # private-repo divergence (rare — see docs/RUNBOOK.md).  Fail
               # loudly so the pipeline blocks and oncall is notified.
@@ -315,7 +330,21 @@ jobs:
               PR_TITLE=$(echo "$DESC_JSON" | jq -r '.title')
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
-              git push origin "${SYNC_BRANCH}"
+              # Push the branch (same remote-exists check as private-to-public).
+              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
+              if [ -n "$REMOTE_REF" ]; then
+                LOCAL_TREE=$(git rev-parse HEAD^{tree})
+                REMOTE_TREE=$(git -C peer rev-parse "origin/${SYNC_BRANCH}^{tree}" 2>/dev/null || true)
+                if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
+                  echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
+                else
+                  popd > /dev/null
+                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content. Manual intervention required."
+                  exit 1
+                fi
+              else
+                git push origin "${SYNC_BRANCH}"
+              fi
               gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
