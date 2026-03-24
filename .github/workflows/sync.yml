@@ -161,10 +161,7 @@ jobs:
             SYNC_BRANCH="${BRANCH_PREFIX}/${SHORT_SHA}"
 
             # Idempotency guard.
-            # If the branch still exists, the PR is open (or wasn't cleaned up) — use it as the stack base.
-            if gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.ref' 2>/dev/null | grep -q .; then
-              STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
-            # If a PR was previously created, check its state.
+            # Check if a PR was previously created for this commit.
             EXISTING_PR_STATE=$(gh pr list --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" --state all \
               --json state --jq '[.[] | select(.state == "OPEN" or .state == "MERGED")] | .[0].state // empty' 2>/dev/null || true)
             if [ -n "$EXISTING_PR_STATE" ]; then
@@ -177,6 +174,10 @@ jobs:
               # the sync branch has likely been deleted.
               continue
             fi
+            # No PR found — check if the branch exists (e.g., pushed but
+            # PR creation failed on a previous run).
+            if gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.ref' 2>/dev/null | grep -q .; then
+              STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"; continue; fi
 
             if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
               # --- Private-to-public: delta between consecutive clean snapshots. ---
