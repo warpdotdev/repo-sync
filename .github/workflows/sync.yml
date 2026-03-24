@@ -212,11 +212,11 @@ jobs:
                 [ -f "${AGENT_OUT}/body.txt" ] && PR_BODY=$(cat "${AGENT_OUT}/body.txt")
               fi
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
-              git push origin
+              git push origin "${SYNC_BRANCH}"
               gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
-              rm -rf "${SNAPSHOT_DIR}" "/tmp/diff-${SHORT_SHA}.patch" "${AGENT_OUT}"
+              rm -rf "${SNAPSHOT_DIR}"
             else
               # --- Public-to-private: cherry-pick, Python-built description. ---
               pushd peer > /dev/null
