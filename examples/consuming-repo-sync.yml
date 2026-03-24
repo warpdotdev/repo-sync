@@ -83,9 +83,9 @@ jobs:
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
-      app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
+      approver_app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
     secrets:
-      app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
+      approver_app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
   # Escalation cron: runs on schedule.

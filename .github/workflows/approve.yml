@@ -28,7 +28,7 @@ on:
         required: false
         type: string
         default: "@oncall-client-primary"
-      app_id:
+      approver_app_id:
         description: "GitHub App ID (approver bot)."
         required: true
         type: string
@@ -38,7 +38,7 @@ on:
         type: string
         default: "main"
     secrets:
-      app_private_key:
+      approver_app_private_key:
         description: "GitHub App private key (approver bot)."
         required: true
 
@@ -59,8 +59,8 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ inputs.app_id }}
-          private-key: ${{ secrets.app_private_key }}
+          app-id: ${{ inputs.approver_app_id }}
+          private-key: ${{ secrets.approver_app_private_key }}
           owner: ${{ github.repository_owner }}
 
       - name: Set GH_TOKEN
