@@ -70,6 +70,13 @@ jobs:
       - name: Set GH_TOKEN
         run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
 
+      # Minimal checkout so the gh CLI has a git context.  The full
+      # fetch-depth: 0 clone is only done for the conflict path.
+      - name: Checkout repo (shallow)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+
       # ---------------------------------------------------------------
       # Skip if already handled: check for existing approval or an
       # existing Repo-Sync-Assigned trailer (conflict already handled).
