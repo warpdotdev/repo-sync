@@ -21,10 +21,10 @@ to prevent infinite loops (a sync commit triggering a reverse sync), sync commit
 this is the more complex direction, because internal-only code must be stripped before syncing.
 
 the workflow:
-1. on each merge to the private repo's default branch, generate a **clean snapshot** of the private repo at that commit (stripping all internal code -- see [marking internal-only code](#marking-internal-only-code) below)
-2. diff the clean snapshot against the previous clean snapshot (or the public repo's current `main` if this is the first unsynced commit)
+1. on each merge to the private repo's default branch, generate **clean snapshots** of the private repo at both the commit and its parent (stripping all internal code -- see [marking internal-only code](#marking-internal-only-code) below)
+2. diff the two clean snapshots to isolate the public-facing changes introduced by this commit
 3. if the diff is empty (i.e., all changes were internal-only), skip -- no PR is created
-4. otherwise, create a sync PR to the public repo (see [stacked sync PRs](#stacked-sync-prs) below)
+4. otherwise, apply the diff to the public repo and create a sync PR (see [stacked sync PRs](#stacked-sync-prs) below)
 5. an agent writes a PR description based on the concrete public diff being merged.  individual commit messages from the private repo are **not** included, to avoid leaking private information
 
 ## public-to-private
@@ -67,7 +67,7 @@ when a sync PR reaches the bottom of the stack and has merge conflicts with the 
 
 build failures after a clean rebase do **not** trigger the conflict resolution agent; they are assigned directly to a human reviewer.
 
-for public-to-private sync, if a cherry-pick fails at creation time (rare — caused by private-only code overlapping with the public commit's diff context), the sync workflow **fails loudly** and notifies oncall.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps.
+for public-to-private sync, if a cherry-pick fails at creation time (rare — caused by private-only code overlapping with the public commit's diff context), the sync workflow **fails loudly** and notifies oncall.  similarly, for private-to-public sync, if the patch cannot be applied to the public repo (caused by un-synced public changes overlapping with the private commit's diff), the sync workflow fails loudly.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps.
 
 the oz agent uses a skill defined in this repository.
 
