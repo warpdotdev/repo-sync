@@ -2,9 +2,13 @@
 # Triggered by a consuming repo on pull_request events for repo-sync/ PRs
 # targeting the default branch (i.e., PRs at the bottom of the stack).
 #
-# For clean PRs: approves and enables auto-merge.
-# For conflicting PRs: invokes the conflict resolution agent, assigns a reviewer,
-# and does NOT approve (human approval required for conflict-resolved PRs).
+# For clean PRs: approves and enables auto-merge (API-only, no git ops).
+# For conflicting PRs: invokes the conflict resolution agent, assigns a
+# reviewer, and does NOT approve (human approval required).
+#
+# Rebasing is the restack workflow's responsibility — this workflow does
+# NOT rebase clean PRs.  It only performs git operations for conflict
+# resolution (rebase to produce conflict markers for the agent).
 #
 # Uses a dedicated "approver bot" GitHub App for all operations.  A separate
 # identity from the primary sync bot is required because GitHub does not allow
@@ -66,36 +70,9 @@ jobs:
       - name: Set GH_TOKEN
         run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
 
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
-
-      - name: Checkout repo-sync tooling
-        uses: actions/checkout@v4
-        with:
-          repository: warpdotdev/repo-sync
-          ref: ${{ inputs.repo_sync_ref }}
-          path: .repo-sync
-          token: ${{ steps.token.outputs.token }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-
-      - name: Install repo-sync tools
-        run: pip install -e .repo-sync
-
-      - name: Configure git identity
-        run: |
-          git config --global user.name "repo-sync-approver-bot"
-          git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
-
       # ---------------------------------------------------------------
-      # Skip if already handled: check for existing approver approval
-      # or an existing Repo-Sync-Assigned trailer (conflict already
-      # being handled).
+      # Skip if already handled: check for existing approval or an
+      # existing Repo-Sync-Assigned trailer (conflict already handled).
       # ---------------------------------------------------------------
       - name: Check if already handled
         id: skip_check
@@ -122,90 +99,128 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
-      # Attempt rebase onto the current default branch.  This handles:
-      # - New PRs that are already on main (no-op rebase).
-      # - Restacked PRs that were successfully rebased (no-op).
-      # - Restacked PRs where rebase failed (does the actual rebase).
+      # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
+      # status (GitHub computes mergeability asynchronously).
       # ---------------------------------------------------------------
-      - name: Rebase onto default branch
+      - name: Check mergeability
         if: steps.skip_check.outputs.skip == 'false'
-        id: rebase
+        id: mergeable
         run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          MAX_RETRIES=5
+          DELAY=5
 
-          git fetch origin
-          git checkout "${PR_BRANCH}"
+          for i in $(seq 1 $MAX_RETRIES); do
+            STATUS=$(gh pr view "${PR_NUMBER}" --json mergeable --jq '.mergeable')
+            echo "Attempt ${i}: mergeable=${STATUS}"
 
-          # Each sync PR has exactly one commit.  Use its parent as the
-          # old base for the rebase.
-          OLD_BASE=$(git rev-parse HEAD~1)
+            if [ "$STATUS" = "MERGEABLE" ]; then
+              echo "status=clean" >> "$GITHUB_OUTPUT"
+              exit 0
+            elif [ "$STATUS" = "CONFLICTING" ]; then
+              echo "status=conflicting" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
 
-          REBASE_SUCCEEDED="true"
-          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${PR_BRANCH}" 2>/tmp/rebase-error.txt; then
-            echo "Rebase has conflicts."
-            REBASE_SUCCEEDED="false"
-          fi
+            # UNKNOWN — wait and retry.
+            if [ "$i" -lt "$MAX_RETRIES" ]; then
+              echo "Mergeability unknown, retrying in ${DELAY}s..."
+              sleep "$DELAY"
+            fi
+          done
 
-          # Check if the rebase actually changed the branch.
-          CURRENT_SHA=$(git rev-parse HEAD)
-          ORIGIN_SHA=$(git rev-parse "origin/${PR_BRANCH}")
-          if [ "$REBASE_SUCCEEDED" = "true" ] && [ "$CURRENT_SHA" != "$ORIGIN_SHA" ]; then
-            echo "Rebase produced new commits. Pushing."
-            echo "needs_push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "needs_push=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "rebase_succeeded=${REBASE_SUCCEEDED}" >> "$GITHUB_OUTPUT"
-
-      - name: Push rebased branch
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true' && steps.rebase.outputs.needs_push == 'true'
-        run: |
-          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
-          git push origin "${PR_BRANCH}" --force-with-lease
+          # Still unknown after retries — skip this run.  The next PR
+          # event will re-trigger the workflow.
+          echo "Mergeability still unknown after ${MAX_RETRIES} retries. Skipping."
+          echo "status=unknown" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
-      # Clean path: approve and enable auto-merge.
+      # Clean path: approve and enable auto-merge (API-only, no git ops).
       # ---------------------------------------------------------------
       - name: Approve PR (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true'
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh pr review "${PR_NUMBER}" --approve \
             --body "Clean sync — no conflicts." || true
 
       - name: Enable auto-merge (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true'
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh pr merge "${PR_NUMBER}" --auto --squash \
             || echo "Warning: could not enable auto-merge on PR #${PR_NUMBER}."
 
       # ---------------------------------------------------------------
-      # Conflict path: invoke the agent, assign a reviewer.
+      # Conflict path: checkout, rebase to produce conflict markers,
+      # invoke the agent, assign a reviewer.
       # ---------------------------------------------------------------
+      - name: Checkout repo
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Checkout repo-sync tooling
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ inputs.repo_sync_ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Set up Python
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Install repo-sync tools
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        run: pip install -e .repo-sync
+
+      - name: Configure git identity
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+        run: |
+          git config --global user.name "repo-sync-approver-bot"
+          git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
+
       - name: Label conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          # Create the label if it doesn't exist.
           gh label create "repo-sync:conflict" --color "D93F0B" \
             --description "Sync PR has merge conflicts" 2>/dev/null || true
           gh pr edit "${PR_NUMBER}" --add-label "repo-sync:conflict"
 
-      - name: Resolve conflicts via agent
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+      - name: Rebase and resolve conflicts via agent
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         id: conflict_resolution
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          git fetch origin
+          git checkout "${PR_BRANCH}"
+
+          # Attempt rebase to produce conflict markers for the agent.
+          OLD_BASE=$(git rev-parse HEAD~1)
+          if git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${PR_BRANCH}" 2>/dev/null; then
+            # Rebase succeeded — the PR was conflicting according to GitHub
+            # but the rebase is clean (possibly a transient state).  Push and
+            # let the next approval check handle it.
+            echo "Rebase succeeded unexpectedly. Pushing."
+            git push origin "${PR_BRANCH}" --force-with-lease
+            echo "agent_needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           CONFLICTING_FILES=$(git diff --name-only --diff-filter=U)
           echo "Conflicting files: ${CONFLICTING_FILES}"
 
           AGENT_SUCCEEDED="false"
-
           if oz agent run \
             --skill warpdotdev/repo-sync:conflict-resolution \
             --context "Conflicting files on PR #${PR_NUMBER}: ${CONFLICTING_FILES}" \
@@ -217,16 +232,17 @@ jobs:
             git rebase --abort 2>/dev/null || true
           fi
 
+          echo "agent_needed=true" >> "$GITHUB_OUTPUT"
           echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
 
       - name: Push agent resolution
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
         run: |
           PR_BRANCH="${{ github.event.pull_request.head.ref }}"
           git push origin "${PR_BRANCH}" --force-with-lease
 
       - name: Assign reviewer after conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+        if: steps.skip_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_needed == 'true'
         run: |
           # Conflict-resolved PRs always require human sign-off.
           # The bot does NOT approve — a human must approve before merge.
