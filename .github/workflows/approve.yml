@@ -2,9 +2,13 @@
 # Triggered by a consuming repo on pull_request events for repo-sync/ PRs
 # targeting the default branch (i.e., PRs at the bottom of the stack).
 #
-# For clean PRs: approves (using a separate GitHub App) and enables auto-merge.
+# For clean PRs: approves and enables auto-merge.
 # For conflicting PRs: invokes the conflict resolution agent, assigns a reviewer,
 # and does NOT approve (human approval required for conflict-resolved PRs).
+#
+# Uses a dedicated "approver bot" GitHub App for all operations.  A separate
+# identity from the primary sync bot is required because GitHub does not allow
+# a PR's author to approve it.
 
 name: approve
 
@@ -25,11 +29,7 @@ on:
         type: string
         default: "@oncall-client-primary"
       app_id:
-        description: "GitHub App ID (primary — used for git operations and auto-merge)."
-        required: true
-        type: string
-      approver_app_id:
-        description: "GitHub App ID (approver — used only for submitting PR approvals)."
+        description: "GitHub App ID (approver bot)."
         required: true
         type: string
       repo_sync_ref:
@@ -39,10 +39,7 @@ on:
         default: "main"
     secrets:
       app_private_key:
-        description: "GitHub App private key (primary)."
-        required: true
-      approver_app_private_key:
-        description: "GitHub App private key (approver)."
+        description: "GitHub App private key (approver bot)."
         required: true
 
 jobs:
@@ -58,31 +55,22 @@ jobs:
       PRIVATE_REPO: ${{ inputs.private_repo }}
       ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:
-      # Generate tokens for both apps.
-      - name: Generate primary token
-        id: primary_token
+      - name: Generate installation token
+        id: token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ inputs.app_id }}
           private-key: ${{ secrets.app_private_key }}
           owner: ${{ github.repository_owner }}
 
-      - name: Generate approver token
-        id: approver_token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ inputs.approver_app_id }}
-          private-key: ${{ secrets.approver_app_private_key }}
-          owner: ${{ github.repository_owner }}
-
       - name: Set GH_TOKEN
-        run: echo "GH_TOKEN=${{ steps.primary_token.outputs.token }}" >> "$GITHUB_ENV"
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
 
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ steps.primary_token.outputs.token }}
+          token: ${{ steps.token.outputs.token }}
 
       - name: Checkout repo-sync tooling
         uses: actions/checkout@v4
@@ -90,7 +78,7 @@ jobs:
           repository: warpdotdev/repo-sync
           ref: ${{ inputs.repo_sync_ref }}
           path: .repo-sync
-          token: ${{ steps.primary_token.outputs.token }}
+          token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -101,8 +89,8 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config --global user.name "repo-sync-bot"
-          git config --global user.email "repo-sync-bot@users.noreply.github.com"
+          git config --global user.name "repo-sync-approver-bot"
+          git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
 
       # ---------------------------------------------------------------
       # Skip if already handled: check for existing approver approval
@@ -113,9 +101,8 @@ jobs:
         id: skip_check
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          APPROVER_APP_ID="${{ inputs.approver_app_id }}"
 
-          # Check for existing approval from the approver app.
+          # Check for existing approval.
           APPROVALS=$(gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews" \
             --jq "[.[] | select(.state == \"APPROVED\")] | length")
           if [ "$APPROVALS" -gt 0 ]; then
@@ -183,8 +170,6 @@ jobs:
       # ---------------------------------------------------------------
       - name: Approve PR (clean)
         if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true'
-        env:
-          GH_TOKEN: ${{ steps.approver_token.outputs.token }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           gh pr review "${PR_NUMBER}" --approve \

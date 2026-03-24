@@ -193,7 +193,7 @@ the primary GitHub App needs the following permissions:
 * `workflows: write` -- push `.github/workflows/` files during sync
 * `metadata: read` -- required for API access
 
-a **second GitHub App** ("approver bot") is required for the approve workflow.  it needs only `pull_requests: write` (to submit approving reviews).  a separate identity is necessary because GitHub does not allow a PR's author to approve it -- since the primary app creates the sync PRs, a different app must approve them.
+a **second GitHub App** ("approver bot") is required for the approve workflow.  it needs `contents: write`, `pull_requests: write`, and `metadata: read`.  the approve workflow uses this single token for all of its operations (approval, conflict resolution pushes, PR edits).  a separate identity is necessary because GitHub does not allow a PR's author to approve it -- since the primary app creates the sync PRs, a different app must approve them.
 
 ## reusable workflow interfaces
 

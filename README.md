@@ -45,7 +45,7 @@ the marker lines and everything between them are stripped.  markers must be prop
 before integrating, ensure the consuming repos have:
 
 1. **a GitHub App** ("sync bot") installed on both repos (and on the `repo-sync` repo itself) with `contents:write`, `pull_requests:write`, `workflows:write`, and `metadata:read` permissions.  store the App ID and private key as repo secrets (`REPO_SYNC_APP_ID`, `REPO_SYNC_APP_PRIVATE_KEY`) in both repos.  the reusable workflows generate short-lived installation tokens internally.
-2. **a second GitHub App** ("approver bot") with `pull_requests:write` permission.  this app approves clean sync PRs — a separate identity is needed because GitHub does not allow a PR's author to approve it.  store as `REPO_SYNC_APPROVER_APP_ID` and `REPO_SYNC_APPROVER_APP_PRIVATE_KEY`.
+2. **a second GitHub App** ("approver bot") with `contents:write`, `pull_requests:write`, and `metadata:read` permissions.  this app handles approval and conflict resolution for sync PRs — a separate identity is needed because GitHub does not allow a PR's author to approve it.  store as `REPO_SYNC_APPROVER_APP_ID` and `REPO_SYNC_APPROVER_APP_PRIVATE_KEY`.
 3. **auto-merge enabled** as a repo-level setting.
 4. **squash merge** as the merge strategy for PRs, configured to **preserve the PR description** in the commit message.
 5. **branch protection rules** on `repo-sync/*` branches, so only the sync workflow's token can create or push to them.
@@ -135,11 +135,9 @@ jobs:
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
-      app_id: ${{ vars.REPO_SYNC_APP_ID }}
-      approver_app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
+      app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
     secrets:
-      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
-      approver_app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
+      app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
 
   escalation:
     if: github.event_name == 'schedule'
