@@ -32,11 +32,10 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
 1. identify unsynced commits on the private repo's default branch (all commits after the watermark's source SHA)
 2. for each unsynced commit (in chronological order):
    a. generate clean snapshots of the private repo at both the current commit and its parent (stripping `private/` dirs and `!repo-sync: private-start`/`!repo-sync: private-end` regions from both)
-   b. compute the diff between the two clean snapshots.  this is done by committing both snapshots into a temporary git repo and using `git diff --binary`, which correctly handles renames, deletions, permission changes, and binary files
-   c. if the diff is empty, skip (all changes in this commit were internal-only)
-   d. check if a branch `repo-sync/private-to-public/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run)
-   e. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   f. apply the diff to the public repo using `git apply`.  this preserves any un-synced public changes, since we are patching on top of the current state rather than replacing the entire tree
+   b. compute the diff between the two clean snapshots by committing both into a temporary git repo.  if the diff is empty, skip (all changes in this commit were internal-only)
+   c. check if a branch `repo-sync/private-to-public/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run)
+   d. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
+   e. apply the delta to the public repo by cherry-picking the diff commit from the temporary repo.  cherry-pick uses three-way merge internally, so it handles context mismatches from un-synced public changes gracefully (unlike `git apply`, which requires exact context-line matches).  this preserves un-synced public changes as long as they don't directly conflict with the private commit's changes
    g. commit with a generic message (e.g., `"repo-sync: sync from private"`).  **do not** use the source commit's message, as it could leak private information
    h. create a PR with the base set to the previous sync branch (or `main`)
 

@@ -216,30 +216,39 @@ jobs:
               git -C "${DIFF_REPO}" add -A
               git -C "${DIFF_REPO}" commit -q -m "curr" --allow-empty
 
-              PATCH_FILE="/tmp/patch-${SHORT_SHA}.patch"
-              git -C "${DIFF_REPO}" diff --binary HEAD~1 HEAD > "${PATCH_FILE}"
-
-              # If the diff is empty, all changes were internal-only — skip.
-              if [ ! -s "${PATCH_FILE}" ]; then
-                rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}" "${PATCH_FILE}"
+              # Check if the diff is empty (all changes were internal-only).
+              if git -C "${DIFF_REPO}" diff --quiet HEAD~1 HEAD; then
+                rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}"
                 continue
               fi
 
-              # Apply the delta to the peer repo.
+              # Generate the patch for the PR description agent.
+              PATCH_FILE="/tmp/patch-${SHORT_SHA}.patch"
+              git -C "${DIFF_REPO}" diff --binary HEAD~1 HEAD > "${PATCH_FILE}"
+              DIFF_COMMIT=$(git -C "${DIFF_REPO}" rev-parse HEAD)
+
+              # Apply the delta to the peer repo by cherry-picking from the
+              # temp repo.  Cherry-pick uses three-way merge internally, so
+              # it handles context mismatches from un-synced public changes
+              # gracefully (unlike git apply, which requires exact context).
               pushd peer > /dev/null
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
               git checkout -b "${SYNC_BRANCH}"
-              if ! git apply "${PATCH_FILE}"; then
+              git remote add diff_source "${DIFF_REPO}" 2>/dev/null || git remote set-url diff_source "${DIFF_REPO}"
+              git fetch diff_source
+              if ! git cherry-pick "${DIFF_COMMIT}" --allow-empty 2>/dev/null; then
+                git cherry-pick --abort 2>/dev/null || true
                 popd > /dev/null
-                echo "::error::Patch apply failed for ${SOURCE_SHA}. Un-synced public changes likely overlap with this private commit. See docs/RUNBOOK.md."
+                echo "::error::Cherry-pick of clean delta failed for ${SOURCE_SHA}. Un-synced public changes conflict with this private commit. See docs/RUNBOOK.md."
                 [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
-                  --data "{\"text\":\"repo-sync: patch apply failed for ${SHORT_SHA} in ${SOURCE_REPO}. Un-synced public changes overlap. See RUNBOOK.md.\"}" \
+                  --data "{\"text\":\"repo-sync: clean delta cherry-pick failed for ${SHORT_SHA} in ${SOURCE_REPO}. See RUNBOOK.md.\"}" \
                   "$SLACK_WEBHOOK_URL" || true
                 exit 1
               fi
-              git add -A
-              git commit -m "repo-sync: sync from private" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
+              # Replace the cherry-picked commit message with a generic one
+              # plus the Repo-Sync-Origin trailer.
+              git commit --amend -m "repo-sync: sync from private" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
 
               # PR description agent.
               AGENT_OUT="/tmp/agent-out-${SHORT_SHA}"; mkdir -p "$AGENT_OUT"
