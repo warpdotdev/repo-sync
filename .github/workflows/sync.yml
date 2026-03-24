@@ -179,10 +179,10 @@ jobs:
             fi
 
             if [ "$SOURCE_IS_PRIVATE" = "true" ]; then
-              # --- Private-to-public: strip, tree replacement, Docker agent. ---
+              # --- Private-to-public: delta between consecutive clean snapshots. ---
+              # Generate clean snapshot at SOURCE_SHA.
               SNAPSHOT_DIR="/tmp/snapshot-${SHORT_SHA}"
               mkdir -p "${SNAPSHOT_DIR}"
-              # Extract the tree at SOURCE_SHA into SNAPSHOT_DIR, then strip in-place.
               git archive "${SOURCE_SHA}" | tar -x -C "${SNAPSHOT_DIR}"
               if ! python -m repo_sync.strip.cli "${SNAPSHOT_DIR}"; then
                 [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
@@ -190,20 +190,56 @@ jobs:
                   "$SLACK_WEBHOOK_URL" || true
                 exit 1
               fi
+
+              # Generate clean snapshot at the parent commit.
+              PREV_SHA=$(git rev-parse "${SOURCE_SHA}^")
+              PREV_SNAPSHOT_DIR="/tmp/snapshot-prev-${SHORT_SHA}"
+              mkdir -p "${PREV_SNAPSHOT_DIR}"
+              git archive "${PREV_SHA}" | tar -x -C "${PREV_SNAPSHOT_DIR}"
+              if ! python -m repo_sync.strip.cli "${PREV_SNAPSHOT_DIR}"; then
+                [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
+                  --data "{\"text\":\"repo-sync: stripping failed for parent of ${SHORT_SHA} in ${SOURCE_REPO}.\"}" \
+                  "$SLACK_WEBHOOK_URL" || true
+                exit 1
+              fi
+
+              # Compute diff between the two clean snapshots using a temp git repo.
+              DIFF_REPO="/tmp/diff-repo-${SHORT_SHA}"
+              git init -q "${DIFF_REPO}"
+              git -C "${DIFF_REPO}" config user.name "repo-sync-bot"
+              git -C "${DIFF_REPO}" config user.email "repo-sync-bot@users.noreply.github.com"
+              cp -a "${PREV_SNAPSHOT_DIR}/." "${DIFF_REPO}/"
+              git -C "${DIFF_REPO}" add -A
+              git -C "${DIFF_REPO}" commit -q -m "prev" --allow-empty
+              git -C "${DIFF_REPO}" rm -rf --quiet . 2>/dev/null || true
+              cp -a "${SNAPSHOT_DIR}/." "${DIFF_REPO}/"
+              git -C "${DIFF_REPO}" add -A
+              git -C "${DIFF_REPO}" commit -q -m "curr" --allow-empty
+
+              PATCH_FILE="/tmp/patch-${SHORT_SHA}.patch"
+              git -C "${DIFF_REPO}" diff --binary HEAD~1 HEAD > "${PATCH_FILE}"
+
+              # If the diff is empty, all changes were internal-only — skip.
+              if [ ! -s "${PATCH_FILE}" ]; then
+                rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}" "${PATCH_FILE}"
+                continue
+              fi
+
+              # Apply the delta to the peer repo.
               pushd peer > /dev/null
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
-              git rm -rf --quiet . 2>/dev/null || true
-              cp -a "${SNAPSHOT_DIR}/." . && git add -A
-              if git diff --cached --quiet; then popd > /dev/null; rm -rf "${SNAPSHOT_DIR}"; continue; fi
               git checkout -b "${SYNC_BRANCH}"
+              git apply "${PATCH_FILE}"
+              git add -A
               git commit -m "repo-sync: sync from private" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-              git diff
+
+              # PR description agent.
               AGENT_OUT="/tmp/agent-out-${SHORT_SHA}"; mkdir -p "$AGENT_OUT"
               PR_TITLE="repo-sync: sync from private (${SHORT_SHA})"
               PR_BODY="repo-sync: sync from private (source: \`${SHORT_SHA}\`)"
               if docker run --rm \
-                -v "${SNAPSHOT_DIR}:/workspace:ro" -v "/tmp/diff-${SHORT_SHA}.patch:/diff.patch:ro" \
+                -v "${SNAPSHOT_DIR}:/workspace:ro" -v "${PATCH_FILE}:/diff.patch:ro" \
                 -v "$(pwd)/../.repo-sync/.agents/skills/pr-description/SKILL.md:/skill.md:ro" \
                 -v "${AGENT_OUT}:/output" -w /workspace warpdotdev/repo-sync-agent:v1 \
                 oz agent run --skill-file /skill.md --context-file /diff.patch --output-dir /output \
@@ -216,7 +252,7 @@ jobs:
               gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
-              rm -rf "${SNAPSHOT_DIR}"
+              rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}" "${PATCH_FILE}" "${AGENT_OUT}"
             else
               # --- Public-to-private: cherry-pick, Python-built description. ---
               pushd peer > /dev/null
