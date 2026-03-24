@@ -283,12 +283,12 @@ jobs:
               REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
                 LOCAL_TREE=$(git rev-parse HEAD^{tree})
-                REMOTE_TREE=$(git -C peer rev-parse "origin/${SYNC_BRANCH}^{tree}" 2>/dev/null || true)
+                REMOTE_TREE=$(gh api "/repos/${PEER_REPO}/git/commits/${REMOTE_REF}" --jq '.tree.sha' 2>/dev/null || true)
                 if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
                   echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
                 else
                   popd > /dev/null
-                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content. Manual intervention required."
+                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Manual intervention required."
                   exit 1
                 fi
               else
@@ -334,12 +334,12 @@ jobs:
               REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
                 LOCAL_TREE=$(git rev-parse HEAD^{tree})
-                REMOTE_TREE=$(git -C peer rev-parse "origin/${SYNC_BRANCH}^{tree}" 2>/dev/null || true)
+                REMOTE_TREE=$(gh api "/repos/${PEER_REPO}/git/commits/${REMOTE_REF}" --jq '.tree.sha' 2>/dev/null || true)
                 if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
                   echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
                 else
                   popd > /dev/null
-                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content. Manual intervention required."
+                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Manual intervention required."
                   exit 1
                 fi
               else
