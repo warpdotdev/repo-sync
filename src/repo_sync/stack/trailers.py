@@ -43,23 +43,48 @@ class SyncAssignment:
         return f"{self.username}@{ts}"
 
 
+def _try_parse_origin_value(value: str) -> SyncOrigin | None:
+    """Try to parse a <repo>@<sha> value string into a SyncOrigin."""
+    value = value.strip()
+    # Value format: <repo>@<sha>.  The repo may contain slashes
+    # (e.g. "warpdotdev/warp-internal"), so we split on the last "@".
+    at_idx = value.rfind("@")
+    if at_idx > 0 and at_idx < len(value) - 1:
+        return SyncOrigin(repo=value[:at_idx], sha=value[at_idx + 1 :])
+    return None
+
+
 def parse_origin(text: str) -> SyncOrigin | None:
     """Extract the last Repo-Sync-Origin trailer from text.
+
+    Handles line-wrapped trailer values: GitHub's squash merge may wrap long
+    trailer lines, placing the value on the line after the key.  When the key
+    line has no value, the next non-empty line is checked.
 
     Returns None if no trailer is found.
     """
     last_match: SyncOrigin | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
         if stripped.startswith(_ORIGIN_PREFIX):
             value = stripped[len(_ORIGIN_PREFIX) :].strip()
-            # Value format: <repo>@<sha>.  The repo may contain slashes
-            # (e.g. "warpdotdev/warp-internal"), so we split on the last "@".
-            at_idx = value.rfind("@")
-            if at_idx > 0 and at_idx < len(value) - 1:
-                last_match = SyncOrigin(
-                    repo=value[:at_idx], sha=value[at_idx + 1 :]
-                )
+            parsed = _try_parse_origin_value(value)
+            if parsed is not None:
+                last_match = parsed
+            elif not value:
+                # Key line has no value — check the next non-empty line
+                # (GitHub squash merge may have wrapped the value).
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                if j < len(lines):
+                    parsed = _try_parse_origin_value(lines[j].strip())
+                    if parsed is not None:
+                        last_match = parsed
+                        i = j  # Skip past the continuation line.
+        i += 1
     return last_match
 
 
