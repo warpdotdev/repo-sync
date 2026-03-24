@@ -44,11 +44,12 @@ the marker lines and everything between them are stripped.  markers must be prop
 
 before integrating, ensure the consuming repos have:
 
-1. **a GitHub App** installed on both repos (and on the `repo-sync` repo itself) with `contents:write`, `pull_requests:write`, `workflows:write`, and `metadata:read` permissions.  store the App ID and private key as repo secrets (`REPO_SYNC_APP_ID`, `REPO_SYNC_APP_PRIVATE_KEY`) in both repos.  the reusable workflows generate short-lived installation tokens internally.
-2. **auto-merge enabled** as a repo-level setting.
-3. **squash merge** as the merge strategy for PRs, configured to **preserve the PR description** in the commit message.
-4. **branch protection rules** on `repo-sync/*` branches, so only the sync workflow's token can create or push to them.
-5. **required PR approvals** on the default branch.  the bot approves clean (conflict-free) sync PRs automatically; conflict-resolved PRs require human approval.  the "require review from someone other than the last pusher" branch protection setting must **not** be enabled.
+1. **a GitHub App** ("sync bot") installed on both repos (and on the `repo-sync` repo itself) with `contents:write`, `pull_requests:write`, `workflows:write`, and `metadata:read` permissions.  store the App ID and private key as repo secrets (`REPO_SYNC_APP_ID`, `REPO_SYNC_APP_PRIVATE_KEY`) in both repos.  the reusable workflows generate short-lived installation tokens internally.
+2. **a second GitHub App** ("approver bot") with `pull_requests:write` permission.  this app approves clean sync PRs — a separate identity is needed because GitHub does not allow a PR's author to approve it.  store as `REPO_SYNC_APPROVER_APP_ID` and `REPO_SYNC_APPROVER_APP_PRIVATE_KEY`.
+3. **auto-merge enabled** as a repo-level setting.
+4. **squash merge** as the merge strategy for PRs, configured to **preserve the PR description** in the commit message.
+5. **branch protection rules** on `repo-sync/*` branches, so only the sync workflow's token can create or push to them.
+6. **required PR approvals** on the default branch.  the approver bot approves clean (conflict-free) sync PRs automatically; conflict-resolved PRs require human approval.
 
 ### step 1: bootstrap the public repo
 
@@ -99,13 +100,13 @@ on:
   push:
     branches: [main]            # triggers sync creation
   pull_request:
-    types: [closed]
-    branches: [main]            # triggers restack on sync PR merge
+    types: [closed, opened, synchronize, edited]
+    branches: [main]            # triggers restack + approve
   schedule:
     - cron: "*/15 * * * *"      # triggers escalation checks
 
-# store REPO_SYNC_APP_ID as a variable and REPO_SYNC_APP_PRIVATE_KEY as a secret.
-# each job only runs when its trigger condition matches, so no wasted runs.
+# store REPO_SYNC_APP_ID and REPO_SYNC_APPROVER_APP_ID as variables,
+# and their private keys as secrets.
 
 jobs:
   sync:
@@ -127,6 +128,18 @@ jobs:
       app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+
+  approve:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@v1
+    with:
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
+      approver_app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
+    secrets:
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+      approver_app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
 
   escalation:
     if: github.event_name == 'schedule'
@@ -153,9 +166,11 @@ after setup, test by merging a small change in each direction:
 
 ## conflict resolution
 
-when a sync PR has merge conflicts, an Oz agent automatically proposes a resolution.  a human reviewer is always requested for sign-off on conflict-resolved PRs.  if the agent fails, the PR is assigned to a human without a proposed resolution.
+when a sync PR reaches the bottom of the stack and has merge conflicts, the approval workflow invokes an Oz agent to propose a resolution.  a human reviewer is always requested for sign-off on conflict-resolved PRs.  if the agent fails, the PR is assigned to a human without a proposed resolution.
 
 if the reviewer doesn't respond within the configured timeout (default: 1 hour), the PR is escalated to the configured team (default: `@oncall-client-primary`).
+
+for operational procedures and failure remediation, see [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## project structure
 
@@ -166,6 +181,7 @@ if the reviewer doesn't respond within the configured timeout (default: 1 hour),
 .github/workflows/        # reusable GitHub Actions workflows
   sync.yml                # sync PR creation
   restack.yml             # post-merge restacking
+  approve.yml             # approval + conflict resolution
   escalation.yml          # cron: timeout, CI failure, stuck stack
 actions/
   validate-markers/       # CI validation composite action
@@ -198,3 +214,4 @@ tests/                    # pytest test suite
 - [docs/TECH-DESIGN.md](docs/TECH-DESIGN.md) -- technical design and implementation details
 - [docs/DECISIONS.md](docs/DECISIONS.md) -- decision log with alternatives and justifications
 - [docs/VALIDATION.md](docs/VALIDATION.md) -- comprehensive test cases
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) -- operational procedures for failure scenarios

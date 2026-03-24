@@ -202,14 +202,8 @@ jobs:
               fi
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               git push origin
-              PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
-              if [ "$IS_STACK_BOTTOM" = "true" ]; then
-                PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-                gh pr review "${PR_NUMBER}" --repo "${PEER_REPO}" --approve \
-                  --body "Clean sync — no conflicts." || true
-                gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
-              fi
+              gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
               rm -rf "${SNAPSHOT_DIR}" "/tmp/diff-${SHORT_SHA}.patch" "${AGENT_OUT}"
             else
@@ -222,28 +216,19 @@ jobs:
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
               git checkout -b "${SYNC_BRANCH}"
-              CHERRY_PICK_FAILED="false"
+              # Cherry-pick the public commit.  If this fails, it's due to
+              # private-repo divergence (rare — see docs/RUNBOOK.md).  Fail
+              # loudly so the pipeline blocks and oncall is notified.
               if ! git cherry-pick "${SOURCE_SHA}" --allow-empty -x 2>/dev/null; then
-                CHERRY_PICK_FAILED="true"
-                if ! oz agent run --skill warpdotdev/repo-sync:conflict-resolution \
-                  --context "Conflicting files: $(git diff --name-only --diff-filter=U)" 2>/dev/null; then
-                  git cherry-pick --abort 2>/dev/null || true
-                  git commit --allow-empty -m "repo-sync: cherry-pick conflict — needs manual resolution" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-                fi
+                git cherry-pick --abort 2>/dev/null || true
+                echo "::error::Cherry-pick failed for ${SOURCE_SHA}. See docs/RUNBOOK.md for remediation."
+                [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
+                  --data "{\"text\":\"repo-sync: cherry-pick failed for ${SHORT_SHA} in ${SOURCE_REPO}. See RUNBOOK.md.\"}" \
+                  "$SLACK_WEBHOOK_URL" || true
+                exit 1
               fi
-              # Append Repo-Sync-Origin trailer to the commit regardless of
-              # whether the cherry-pick succeeded cleanly or the agent resolved
-              # conflicts.  This ensures the trailer is always present in the
-              # commit message for loop detection.
-              if [ "$CHERRY_PICK_FAILED" = "false" ]; then
-                git commit --amend -m "$(git log -1 --format='%B')" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-              else
-                # Agent-resolved cherry-pick: amend the agent's commit to add the trailer.
-                EXISTING_MSG=$(git log -1 --format='%B')
-                if ! echo "$EXISTING_MSG" | grep -q '^Repo-Sync-Origin:'; then
-                  git commit --amend --no-edit -m "${EXISTING_MSG}" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
-                fi
-              fi
+              # Append Repo-Sync-Origin trailer to the cherry-picked commit.
+              git commit --amend -m "$(git log -1 --format='%B')" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
               # Build description via Python.
               COMMIT_SUBJECT=$(git log -1 --format='%s' "${SOURCE_SHA}" 2>/dev/null || echo "sync")
               COMMIT_BODY_TEXT=$(git log -1 --format='%b' "${SOURCE_SHA}" 2>/dev/null || true)
@@ -254,24 +239,8 @@ jobs:
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               git push origin "${SYNC_BRANCH}"
-              PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
-              PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-              if [ "$CHERRY_PICK_FAILED" = "true" ]; then
-                REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
-                  --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
-                  --fallback-team "${ESCALATE_TO}")
-                REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
-                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-                TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-                CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --repo "${PEER_REPO}" --json body --jq '.body')
-                UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
-                gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --body "${UPDATED_BODY}"
-              elif [ "$IS_STACK_BOTTOM" = "true" ]; then
-                gh pr review "${PR_NUMBER}" --repo "${PEER_REPO}" --approve \
-                  --body "Clean sync — no conflicts." || true
-                gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
-              fi
+              gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
               popd > /dev/null
             fi
             STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"

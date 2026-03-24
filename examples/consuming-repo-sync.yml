@@ -4,12 +4,15 @@
 # and adjust the configuration values below.
 #
 # Prerequisites for the consuming repo:
-#   - A GitHub App installed on both repos with contents:write, pull_requests:write,
-#     and metadata:read permissions.
-#   - The App's ID and private key stored as repository secrets (REPO_SYNC_APP_ID,
-#     REPO_SYNC_APP_PRIVATE_KEY).  The reusable workflows generate short-lived
-#     installation tokens internally.
+#   - A GitHub App ("sync bot") installed on both repos with contents:write,
+#     pull_requests:write, workflows:write, and metadata:read permissions.
+#     Store as REPO_SYNC_APP_ID / REPO_SYNC_APP_PRIVATE_KEY.
+#   - A second GitHub App ("approver bot") with pull_requests:write permission.
+#     Store as REPO_SYNC_APPROVER_APP_ID / REPO_SYNC_APPROVER_APP_PRIVATE_KEY.
+#     This app approves clean sync PRs (a separate identity is needed because
+#     GitHub does not allow a PR's author to approve it).
 #   - Auto-merge enabled as a repo-level setting.
+#   - Required PR approvals on the default branch.
 #   - Squash merge configured to preserve the PR description in the commit message.
 #   - Branch protection rules on repo-sync/* branches (only the sync workflow's
 #     token can create/push to them).
@@ -20,7 +23,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [closed]
+    types: [closed, opened, synchronize, edited]
     branches: [main]
   schedule:
     # Run escalation checks every 15 minutes.
@@ -65,6 +68,26 @@ jobs:
       app_id: ${{ vars.REPO_SYNC_APP_ID }}
     secrets:
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+
+  # -----------------------------------------------------------------------
+  # Approve: triggered when a sync PR targets the default branch.
+  # Approves clean PRs (using the separate approver app) and handles
+  # conflict resolution for PRs that can't merge cleanly.
+  # -----------------------------------------------------------------------
+  approve:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@v1
+    with:
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
+      approver_app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
+    secrets:
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+      approver_app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
 
   # -----------------------------------------------------------------------
   # Escalation cron: runs on schedule.

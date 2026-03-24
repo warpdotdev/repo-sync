@@ -103,11 +103,12 @@ the following assignment tests apply to all contexts where a reviewer is request
 - if the workflow crashes and restarts mid-run, it does not create duplicate PRs for commits that already have sync branches
 - if a sync branch already exists for a given SHA, the workflow skips that commit
 
-### auto-merge
+### approval and auto-merge
 
-- the bottom PR in the stack (base = default branch) has auto-merge enabled
-- PRs deeper in the stack do **not** have auto-merge enabled
-- after restacking, the new bottom PR gets auto-merge enabled
+- when a sync PR is created at the bottom of the stack (base = default branch), the approve workflow approves it and enables auto-merge
+- PRs deeper in the stack do **not** get approved or have auto-merge enabled
+- after restacking, the new bottom PR is approved and gets auto-merge enabled by the approve workflow
+- the approval comes from the approver bot (second GitHub App), not the primary sync bot
 
 ## sync workflow -- public-to-private
 
@@ -130,18 +131,17 @@ the following assignment tests apply to all contexts where a reviewer is request
 - if the workflow crashes and restarts mid-run, it does not create duplicate public-to-private PRs
 - if a sync branch already exists for a given SHA, the workflow skips that commit
 
-### auto-merge
+### approval and auto-merge
 
-- the bottom public-to-private PR in the stack (base = default branch) has auto-merge enabled
-- PRs deeper in the stack do **not** have auto-merge enabled
-- after restacking, the new bottom PR gets auto-merge enabled
+- when a public-to-private sync PR is created at the bottom of the stack (base = default branch), the approve workflow approves it and enables auto-merge
+- PRs deeper in the stack do **not** get approved or have auto-merge enabled
+- after restacking, the new bottom PR is approved and gets auto-merge enabled by the approve workflow
 
-### cherry-pick conflicts
+### cherry-pick failures
 
-- if a cherry-pick conflicts (e.g., the same file was modified in the private repo), the conflict resolution agent is invoked
-- if the agent resolves the conflict, a resolution commit is added to the PR and a reviewer is requested (human sign-off required)
-- auto-merge is **not** enabled on conflict-resolved PRs
-- if the agent fails, the PR is still created and a reviewer is requested
+- if a cherry-pick fails at creation time (due to private-repo divergence), the sync workflow fails loudly and notifies oncall via Slack
+- the watermark does not advance, blocking subsequent commits until the issue is resolved
+- see [RUNBOOK.md](RUNBOOK.md) for remediation steps
 
 ## infinite loop prevention
 
@@ -167,12 +167,33 @@ the following assignment tests apply to all contexts where a reviewer is request
 ### restacking after merge
 
 - after the bottom PR merges, the next PR is rebased onto the updated default branch using `git rebase --onto`
-- the rebased PR's base branch is updated to the default branch
-- if the rebase succeeds and CI passes, the PR auto-merges
-- if the rebase succeeds but CI fails, the PR is assigned to a human reviewer (no agent invocation)
-- if the rebase has conflicts, the conflict resolution agent is invoked
-- after agent conflict resolution during restacking, a reviewer is **always** requested (human sign-off required)
-- auto-merge is **not** enabled on conflict-resolved PRs during restacking
+- the rebased PR's base branch is updated to the default branch (always, regardless of rebase outcome)
+- if the rebase succeeds, the branch is pushed and the approve workflow handles approval and auto-merge
+- if the rebase fails, the rebase is aborted and the PR base is still updated to the default branch (triggering the approve workflow)
+
+## approve workflow
+
+### clean PRs
+
+- when a `repo-sync/` PR targets the default branch and has no merge conflicts, the approve workflow approves it (using the approver bot) and enables auto-merge
+- the approval uses a separate GitHub App identity from the one that created the PR
+- if the PR already has an approval, the workflow skips (idempotent)
+- if the PR already has a `Repo-Sync-Assigned` trailer, the workflow skips (conflict already being handled)
+
+### conflict resolution
+
+- when a sync PR at the bottom of the stack has merge conflicts, the approve workflow invokes the conflict resolution agent
+- if the agent resolves the conflict, a resolution commit is pushed and a reviewer is requested (human sign-off required)
+- the approve workflow does **not** approve conflict-resolved PRs -- a human must approve
+- a `repo-sync:conflict` label is added to the PR for visibility
+- a `Repo-Sync-Assigned` trailer is appended with the reviewer and timestamp
+- if the agent fails, the PR is still assigned to a reviewer without a proposed resolution
+
+### rebase behavior
+
+- the approve workflow always attempts `git rebase --onto origin/main HEAD~1 <branch>` to ensure the PR is up-to-date
+- for PRs already on main (new or cleanly restacked), this is a no-op
+- for PRs where the restack workflow's rebase failed, this performs the actual rebase
 
 ### 3+ PR stack
 
@@ -250,5 +271,11 @@ the following assignment tests apply to all contexts where a reviewer is request
 ### agent failures
 
 - if the conflict resolution agent errors, the PR is assigned to a human without an agent-proposed resolution
-- if the conflict resolution agent produces code that doesn't compile, the workflow treats it as a failure
-- if the PR description agent fails, the workflow creates the PR with a generic fallback description that includes a reference to the source commit (e.g., "repo-sync: sync from private (source: `<short-sha>`)").  the `Repo-Sync-Origin` trailer is still appended.  the sync is not blocked
+- if the conflict resolution agent produces code that doesn't compile, the approve workflow treats it as a failure
+- if the PR description agent fails, the sync workflow creates the PR with a generic fallback description that includes a reference to the source commit (e.g., "repo-sync: sync from private (source: `<short-sha>`)").  the `Repo-Sync-Origin` trailer is still appended.  the sync is not blocked
+
+### cherry-pick failures
+
+- if a public-to-private cherry-pick fails at creation time, the sync workflow fails and sends a Slack notification
+- the watermark does not advance, so the next run retries from the same commit
+- remediation: fix the private repo (move `!repo-sync` markers away from the affected lines) or manually create the sync PR (see [RUNBOOK.md](RUNBOOK.md))

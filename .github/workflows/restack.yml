@@ -304,118 +304,31 @@ jobs:
           echo "rebase_succeeded=${REBASE_SUCCEEDED}" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
-      # Handle rebase conflicts: invoke the conflict resolution agent.
-      # ---------------------------------------------------------------
-      - name: Resolve conflicts via agent
-        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false'
-        id: conflict_resolution
-        run: |
-          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
-          NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
-
-          CONFLICTING_FILES=$(git diff --name-only --diff-filter=U)
-          echo "Conflicting files: ${CONFLICTING_FILES}"
-
-          AGENT_SUCCEEDED="false"
-
-          # Invoke the conflict resolution agent.
-          # Expected interface: oz agent run --skill warpdotdev/repo-sync:conflict-resolution
-          # The agent resolves conflicts in the working tree, stages them, and
-          # continues the rebase.
-          if oz agent run \
-            --skill warpdotdev/repo-sync:conflict-resolution \
-            --context "Conflicting files during restack of PR #${NEXT_PR_NUMBER}: ${CONFLICTING_FILES}" \
-            2>/dev/null; then
-            echo "Agent resolved rebase conflicts."
-            AGENT_SUCCEEDED="true"
-          else
-            echo "Agent failed to resolve rebase conflicts."
-            # Abort the rebase so we're in a clean state.
-            git rebase --abort 2>/dev/null || true
-          fi
-
-          echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
-
-      # ---------------------------------------------------------------
       # Push the rebased branch and update the PR's base.
+      # Conflict resolution, approval, and auto-merge are handled by
+      # the separate approve workflow.
       # ---------------------------------------------------------------
+      - name: Abort rebase on conflict
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false'
+        run: |
+          git rebase --abort 2>/dev/null || true
+
       - name: Push rebased branch
-        if: steps.next_pr.outputs.found == 'true' && (steps.rebase.outputs.rebase_succeeded == 'true' || steps.conflict_resolution.outputs.agent_succeeded == 'true')
+        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'true'
         run: |
           NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
           git push origin "${NEXT_BRANCH}" --force-with-lease
 
       - name: Update PR base branch
-        if: steps.next_pr.outputs.found == 'true' && (steps.rebase.outputs.rebase_succeeded == 'true' || steps.conflict_resolution.outputs.agent_succeeded == 'true')
+        if: steps.next_pr.outputs.found == 'true'
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          # Update the PR's base to the default branch (it was previously
-          # based on the now-merged branch).
+          # Always update the PR's base to the default branch so the
+          # approve workflow can be triggered.  For clean rebases the
+          # branch has already been pushed; for conflicts the branch
+          # is unchanged but the base update fires an 'edited' event
+          # that triggers the approve workflow.
           gh pr edit "${NEXT_PR_NUMBER}" --base "${DEFAULT_BRANCH}"
           echo "Updated PR #${NEXT_PR_NUMBER} base to ${DEFAULT_BRANCH}."
-
-      # ---------------------------------------------------------------
-      # Enable auto-merge or assign reviewer based on outcome.
-      # ---------------------------------------------------------------
-      - name: Approve and enable auto-merge (clean rebase, no conflicts)
-        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'true'
-        run: |
-          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
-
-          # Approve the PR and enable auto-merge.  The bot only approves PRs
-          # that rebased cleanly (no conflicts), ensuring conflict-resolved PRs
-          # always require a human approval before merging.
-          gh pr review "${NEXT_PR_NUMBER}" --approve \
-            --body "Clean rebase — no conflicts." || true
-          gh pr merge "${NEXT_PR_NUMBER}" --auto --squash \
-            || echo "Warning: could not enable auto-merge on PR #${NEXT_PR_NUMBER}."
-
-      - name: Assign reviewer after agent conflict resolution
-        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
-        run: |
-          # Agent-resolved conflicts always require human sign-off.
-          # Auto-merge is NOT enabled on conflict-resolved PRs.
-          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
-
-          # Parse source info via Python to avoid duplicating trailer parsing.
-          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
-            --pr-number "${NEXT_PR_NUMBER}" --gh-repo "${{ github.repository }}")
-          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
-          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
-
-          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
-            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
-            --fallback-team "${ESCALATE_TO}")
-          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
-
-          gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
-          UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
-          gh pr edit "${NEXT_PR_NUMBER}" --body "${UPDATED_BODY}"
-          echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent-resolved conflict)."
-
-      - name: Assign reviewer after agent failure
-        if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded != 'true'
-        run: |
-          # Agent failed — assign to human without a proposed resolution.
-          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
-
-          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
-            --pr-number "${NEXT_PR_NUMBER}" --gh-repo "${{ github.repository }}")
-          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
-          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
-
-          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
-            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
-            --fallback-team "${ESCALATE_TO}")
-          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
-
-          gh pr edit "${NEXT_PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          CURRENT_BODY=$(gh pr view "${NEXT_PR_NUMBER}" --json body --jq '.body')
-          UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
-          gh pr edit "${NEXT_PR_NUMBER}" --body "${UPDATED_BODY}"
-          echo "Requested review from ${REVIEWER} on PR #${NEXT_PR_NUMBER} (agent failed, needs manual resolution)."

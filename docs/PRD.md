@@ -45,7 +45,9 @@ this provides natural queuing semantics:
 * each PR in the stack shows only the diff for the single commit it corresponds to, making review easier
 * once a conflict is resolved and the base PR merges, automation restacks and proceeds with the next PR
 
-sync PRs use **squash and merge**.  the squash commit message includes the full PR title and description (ensuring the `Repo-Sync-Origin` trailer is preserved for infinite loop prevention).  clean (no-conflict) sync PRs receive an approving review from the bot and are **auto-merged** without human review.  conflict-resolved PRs do not receive a bot approval, ensuring that a human must approve them before they can merge.
+sync PRs use **squash and merge**.  the squash commit message includes the full PR title and description (ensuring the `Repo-Sync-Origin` trailer is preserved for infinite loop prevention).  clean (no-conflict) sync PRs receive an approving review from a dedicated approver bot and are **auto-merged** without human review.  conflict-resolved PRs do not receive a bot approval, ensuring that a human must approve them before they can merge.
+
+the approval decision is made by a **separate approval workflow** that runs when a sync PR is at the bottom of the stack (targeting the default branch).  the approval workflow uses a second GitHub App identity (required because GitHub does not allow a PR's author to approve it).  this separation provides a clean audit boundary: the sync and restack workflows only create and rebase PRs; the approval workflow owns the "should this merge?" decision.
 
 stack management is implemented using a **custom tool** built on `git` and `gh` (no third-party dependency like graphite).  the tool handles:
 * creating branches stacked on the previous sync branch (or `main` if no stack exists)
@@ -54,14 +56,18 @@ stack management is implemented using a **custom tool** built on `git` and `gh` 
 
 # conflict resolution
 
-when a sync PR encounters a **git merge conflict**:
-1. a **local oz agent** is invoked from within the github actions workflow (using the oz CLI), to avoid paying for idle github actions minutes while a cloud agent runs
-2. the agent adds a commit to the sync PR with a proposed conflict resolution
-3. the person who merged the source PR is requested as reviewer; for direct pushes (no source PR), the commit author is requested instead.  if neither can be determined, request review from `@oncall-client-primary`
-4. if the reviewer doesn't respond within a configurable timeout, review is requested from the configured escalation team (defaults to `@oncall-client-primary`)
-5. if the agent fails (e.g., it errors or produces a resolution that does not apply cleanly), the PR is still assigned to the merger, but without an agent-proposed resolution
+when a sync PR reaches the bottom of the stack and has merge conflicts with the default branch, the **approval workflow** handles resolution:
+1. the approval workflow attempts to rebase the PR onto the current default branch
+2. if the rebase has conflicts, a **local oz agent** is invoked (using the oz CLI) to propose a resolution
+3. the agent adds a commit to the sync PR with the proposed resolution
+4. the person who merged the source PR is requested as reviewer; for direct pushes (no source PR), the commit author is requested instead.  if neither can be determined, request review from `@oncall-client-primary`
+5. if the reviewer doesn't respond within a configurable timeout, review is requested from the configured escalation team (defaults to `@oncall-client-primary`)
+6. if the agent fails (e.g., it errors or produces a resolution that does not apply cleanly), the PR is still assigned to the merger, but without an agent-proposed resolution
+7. the approval workflow does **not** approve conflict-resolved PRs — a human must approve before merge
 
 build failures after a clean rebase do **not** trigger the conflict resolution agent; they are assigned directly to a human reviewer.
+
+for public-to-private sync, if a cherry-pick fails at creation time (rare — caused by private-only code overlapping with the public commit's diff context), the sync workflow **fails loudly** and notifies oncall.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps.
 
 the oz agent uses a skill defined in this repository.
 
@@ -120,7 +126,7 @@ this repository provides a **reusable github action** that can be integrated int
 
 this repository contains:
 
-* **reusable github workflows** -- sync creation (triggered per-commit on the default branch), restack (triggered on sync PR merge), and escalation (cron)
+* **reusable github workflows** -- sync creation (triggered per-commit on the default branch), restack (triggered on sync PR merge), approval (triggered on sync PR events at the bottom of the stack), and escalation (cron)
 * **reusable github action** -- CI validation of `!repo-sync` marker correctness
 * **stripping tool** -- generates a clean snapshot of the private repo with all internal code removed
 * **stack management tool** -- manages the stacked sync PR lifecycle using `git` and `gh`
@@ -136,4 +142,5 @@ consuming repos will need to provide:
 * any workflow configuration needed to identify the counterpart repo and authenticate cross-repo operations
 * source repos must use **squash merge** for PRs to their default branch (this ensures each merge produces exactly one commit, which is the unit of sync)
 * squash merge must be configured to **preserve the PR description in the commit message** (required for `Repo-Sync-Origin` trailer to survive into the merged commit, which is needed for infinite loop prevention and watermark tracking)
-* the default branch must have **required PR approvals** enabled.  the bot submits an approving review on clean (conflict-free) sync PRs, satisfying this requirement.  the "require review from someone other than the last pusher" branch protection setting must **not** be enabled, since the bot both pushes the sync branch and approves the PR
+* the default branch must have **required PR approvals** enabled.  a dedicated approver bot submits an approving review on clean (conflict-free) sync PRs, satisfying this requirement
+* a **second GitHub App** ("approver bot") with `pull_requests:write` permission, used solely for approving clean sync PRs.  a separate identity is required because GitHub does not allow a PR's author to approve it.  store its credentials as `REPO_SYNC_APPROVER_APP_ID` and `REPO_SYNC_APPROVER_APP_PRIVATE_KEY`

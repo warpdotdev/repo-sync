@@ -1,0 +1,265 @@
+# Reusable workflow: sync PR approval and conflict resolution.
+# Triggered by a consuming repo on pull_request events for repo-sync/ PRs
+# targeting the default branch (i.e., PRs at the bottom of the stack).
+#
+# For clean PRs: approves (using a separate GitHub App) and enables auto-merge.
+# For conflicting PRs: invokes the conflict resolution agent, assigns a reviewer,
+# and does NOT approve (human approval required for conflict-resolved PRs).
+
+name: approve
+
+on:
+  workflow_call:
+    inputs:
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
+        required: true
+        type: string
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      app_id:
+        description: "GitHub App ID (primary — used for git operations and auto-merge)."
+        required: true
+        type: string
+      approver_app_id:
+        description: "GitHub App ID (approver — used only for submitting PR approvals)."
+        required: true
+        type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use."
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      app_private_key:
+        description: "GitHub App private key (primary)."
+        required: true
+      approver_app_private_key:
+        description: "GitHub App private key (approver)."
+        required: true
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    # Only run for repo-sync/ branches targeting the default branch.
+    if: startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PUBLIC_REPO: ${{ inputs.public_repo }}
+      PRIVATE_REPO: ${{ inputs.private_repo }}
+      ESCALATE_TO: ${{ inputs.escalate_to }}
+    steps:
+      # Generate tokens for both apps.
+      - name: Generate primary token
+        id: primary_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Generate approver token
+        id: approver_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.approver_app_id }}
+          private-key: ${{ secrets.approver_app_private_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.primary_token.outputs.token }}" >> "$GITHUB_ENV"
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.primary_token.outputs.token }}
+
+      - name: Checkout repo-sync tooling
+        uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ inputs.repo_sync_ref }}
+          path: .repo-sync
+          token: ${{ steps.primary_token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Install repo-sync tools
+        run: pip install -e .repo-sync
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "repo-sync-bot"
+          git config --global user.email "repo-sync-bot@users.noreply.github.com"
+
+      # ---------------------------------------------------------------
+      # Skip if already handled: check for existing approver approval
+      # or an existing Repo-Sync-Assigned trailer (conflict already
+      # being handled).
+      # ---------------------------------------------------------------
+      - name: Check if already handled
+        id: skip_check
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          APPROVER_APP_ID="${{ inputs.approver_app_id }}"
+
+          # Check for existing approval from the approver app.
+          APPROVALS=$(gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews" \
+            --jq "[.[] | select(.state == \"APPROVED\")] | length")
+          if [ "$APPROVALS" -gt 0 ]; then
+            echo "PR already has an approval. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Check for Repo-Sync-Assigned trailer (conflict already being handled).
+          BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
+          if echo "$BODY" | grep -q '^Repo-Sync-Assigned:'; then
+            echo "PR already has a Repo-Sync-Assigned trailer. Skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # Attempt rebase onto the current default branch.  This handles:
+      # - New PRs that are already on main (no-op rebase).
+      # - Restacked PRs that were successfully rebased (no-op).
+      # - Restacked PRs where rebase failed (does the actual rebase).
+      # ---------------------------------------------------------------
+      - name: Rebase onto default branch
+        if: steps.skip_check.outputs.skip == 'false'
+        id: rebase
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          git fetch origin
+          git checkout "${PR_BRANCH}"
+
+          # Each sync PR has exactly one commit.  Use its parent as the
+          # old base for the rebase.
+          OLD_BASE=$(git rev-parse HEAD~1)
+
+          REBASE_SUCCEEDED="true"
+          if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${PR_BRANCH}" 2>/tmp/rebase-error.txt; then
+            echo "Rebase has conflicts."
+            REBASE_SUCCEEDED="false"
+          fi
+
+          # Check if the rebase actually changed the branch.
+          CURRENT_SHA=$(git rev-parse HEAD)
+          ORIGIN_SHA=$(git rev-parse "origin/${PR_BRANCH}")
+          if [ "$REBASE_SUCCEEDED" = "true" ] && [ "$CURRENT_SHA" != "$ORIGIN_SHA" ]; then
+            echo "Rebase produced new commits. Pushing."
+            echo "needs_push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "rebase_succeeded=${REBASE_SUCCEEDED}" >> "$GITHUB_OUTPUT"
+
+      - name: Push rebased branch
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true' && steps.rebase.outputs.needs_push == 'true'
+        run: |
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          git push origin "${PR_BRANCH}" --force-with-lease
+
+      # ---------------------------------------------------------------
+      # Clean path: approve and enable auto-merge.
+      # ---------------------------------------------------------------
+      - name: Approve PR (clean)
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true'
+        env:
+          GH_TOKEN: ${{ steps.approver_token.outputs.token }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr review "${PR_NUMBER}" --approve \
+            --body "Clean sync — no conflicts." || true
+
+      - name: Enable auto-merge (clean)
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'true'
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr merge "${PR_NUMBER}" --auto --squash \
+            || echo "Warning: could not enable auto-merge on PR #${PR_NUMBER}."
+
+      # ---------------------------------------------------------------
+      # Conflict path: invoke the agent, assign a reviewer.
+      # ---------------------------------------------------------------
+      - name: Label conflict
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          # Create the label if it doesn't exist.
+          gh label create "repo-sync:conflict" --color "D93F0B" \
+            --description "Sync PR has merge conflicts" 2>/dev/null || true
+          gh pr edit "${PR_NUMBER}" --add-label "repo-sync:conflict"
+
+      - name: Resolve conflicts via agent
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+        id: conflict_resolution
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          CONFLICTING_FILES=$(git diff --name-only --diff-filter=U)
+          echo "Conflicting files: ${CONFLICTING_FILES}"
+
+          AGENT_SUCCEEDED="false"
+
+          if oz agent run \
+            --skill warpdotdev/repo-sync:conflict-resolution \
+            --context "Conflicting files on PR #${PR_NUMBER}: ${CONFLICTING_FILES}" \
+            2>/dev/null; then
+            echo "Agent resolved conflicts."
+            AGENT_SUCCEEDED="true"
+          else
+            echo "Agent failed to resolve conflicts."
+            git rebase --abort 2>/dev/null || true
+          fi
+
+          echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
+
+      - name: Push agent resolution
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
+        run: |
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+          git push origin "${PR_BRANCH}" --force-with-lease
+
+      - name: Assign reviewer after conflict
+        if: steps.skip_check.outputs.skip == 'false' && steps.rebase.outputs.rebase_succeeded == 'false'
+        run: |
+          # Conflict-resolved PRs always require human sign-off.
+          # The bot does NOT approve — a human must approve before merge.
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
+            --pr-number "${PR_NUMBER}" --gh-repo "${{ github.repository }}")
+          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
+          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
+
+          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
+            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
+            --fallback-team "${ESCALATE_TO}")
+          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
+
+          gh pr edit "${PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
+          UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
+          gh pr edit "${PR_NUMBER}" --body "${UPDATED_BODY}"
+          echo "Requested review from ${REVIEWER} on PR #${PR_NUMBER}."
