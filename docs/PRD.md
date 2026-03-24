@@ -67,7 +67,7 @@ when a sync PR reaches the bottom of the stack and has merge conflicts with the 
 
 build failures after a clean rebase do **not** trigger the conflict resolution agent; they are assigned directly to a human reviewer.
 
-for public-to-private sync, if a cherry-pick fails at creation time (rare — caused by private-only code overlapping with the public commit's diff context), the sync workflow **fails loudly** and notifies oncall.  similarly, for private-to-public sync, if the patch cannot be applied to the public repo (caused by un-synced public changes overlapping with the private commit's diff), the sync workflow fails loudly.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps.
+for public-to-private sync, if a cherry-pick fails at creation time (rare — caused by private-only code overlapping with the public commit's diff context), the sync workflow **fails loudly** and notifies oncall.  similarly, for private-to-public sync, if the cherry-pick of the clean delta fails (caused by un-synced public changes directly conflicting with the private commit's changes), the sync workflow fails loudly.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps.
 
 the oz agent uses a skill defined in this repository.
 

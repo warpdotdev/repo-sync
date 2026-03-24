@@ -13,16 +13,17 @@ this document records the key design decisions made for repo-sync, the alternati
 
 **justification:** with stacked sync PRs (see below), the "backed up due to merge conflict" problem is handled gracefully -- new sync PRs simply queue up in the stack.  this eliminates the main advantage of periodic batching (avoiding pileups) while preserving per-commit granularity for easier review.  private-to-public commit volume is expected to be low; public-to-private is higher but manageable with stacking.
 
-## sync mechanism (private-to-public): clean snapshot vs. filtered diff vs. git filter
+## sync mechanism (private-to-public): clean snapshot delta vs. filtered diff vs. git filter
 
-**decision:** generate a clean snapshot on-demand and diff it against the public repo.
+**decision:** generate clean snapshots at both the current commit and its parent, diff them, and cherry-pick the delta onto the public repo.
 
 **alternatives considered:**
 1. **filtered-diff approach** -- take the diff of new commits on private, strip hunks touching internal code, apply to public
-2. **clean-snapshot approach** (chosen) -- generate a full stripped copy of the private repo, diff against public
-3. **git filter approach** -- use `git filter-repo` or clean/smudge filters to produce a stripped branch
+2. **full tree replacement** -- generate a full stripped copy of the private repo and replace the public repo's tree entirely
+3. **clean-snapshot delta** (chosen) -- generate clean snapshots at consecutive commits, diff them, cherry-pick the delta
+4. **git filter approach** -- use `git filter-repo` or clean/smudge filters to produce a stripped branch
 
-**justification:** the filtered-diff approach is brittle -- it operates on diffs, so moved files or context-dependent hunks can break.  the git filter approach is powerful but adds complexity.  the clean-snapshot approach is the simplest and most robust: you always know the ground truth of what public should look like.  it's also self-healing -- if something gets out of sync, the next run produces the correct diff automatically.  the tradeoff is that it's more computationally expensive (regenerating the full snapshot each time), but this is not a concern until proven otherwise.
+**justification:** the filtered-diff approach is brittle -- it operates on diffs, so moved files or context-dependent hunks can break.  full tree replacement was the original approach but overwrites un-synced public changes (public commits not yet synced to private).  the delta approach avoids this by applying only the changes from each private commit, preserving the public repo's current state.  cherry-pick (rather than `git apply`) is used because it handles context mismatches via three-way merge.  the git filter approach is powerful but adds complexity.  see the "private-to-public sync: delta between consecutive clean snapshots" decision below for the full rationale.
 
 ## sync state tracking: stateless snapshots with watermark
 
@@ -163,3 +164,31 @@ the original "stateless" decision was correct for its context (snapshot generati
 **decision:** clean (no-conflict) sync PRs are auto-merged without human review.
 
 **justification:** the purpose of sync PRs is to keep repos in sync, not to gate changes.  the changes have already been reviewed and merged in the source repo.  requiring human review for every clean sync PR would create unnecessary bottlenecks and defeat the goal of automated syncing.
+
+## private-to-public sync: delta between consecutive clean snapshots (not tree replacement)
+
+**decision:** generate clean snapshots at both the current commit and its parent, diff them, and cherry-pick the diff commit onto the public repo.
+
+**alternatives considered:**
+1. **full tree replacement** -- replace the public repo's entire tree with the clean snapshot
+2. **delta between consecutive clean snapshots** (chosen) -- diff the two snapshots and apply only the changes
+
+**justification:** full tree replacement overwrites any un-synced public changes (e.g., public commits that haven't been synced to private yet).  the delta approach preserves those changes because it patches on top of the current public state rather than replacing it.  cherry-pick (rather than `git apply`) is used because it uses three-way merge internally, handling context mismatches from un-synced public changes gracefully.
+
+## separate approval bot (second GitHub App)
+
+**decision:** use a dedicated second GitHub App ("approver bot") for the approval workflow.
+
+**alternatives considered:**
+1. **same bot approves its own PRs** -- not possible; GitHub prohibits PR authors from approving their own PRs
+2. **bypass branch protection** -- add the sync bot as a bypass actor so it can merge without approval
+3. **`GITHUB_TOKEN`** -- use the workflow's built-in token for approval
+4. **dedicated approver bot** (chosen)
+
+**justification:** option 1 is a GitHub limitation.  option 2 weakens the structural guarantee (the bot could merge conflict-resolved PRs by accident).  option 3 (`github-actions[bot]`) works technically but is a shared identity that's harder to audit.  a dedicated approver bot provides clear attribution and keeps the safety property structural: the bot only approves PRs that pass all checks, and without its approval, branch protection prevents merging.
+
+## approval workflow: API-only clean path with commit-count guard
+
+**decision:** the approval workflow checks mergeability and commit count via the GitHub API for clean PRs (no git operations).  git operations are only performed for the conflict resolution path.
+
+**justification:** the approval workflow originally rebased PRs, but this caused spurious force-pushes because the approver bot's committer identity differs from the sync bot's.  moving rebasing to the restack workflow (where it belongs) and making the approval workflow API-only for clean PRs eliminates this issue.  the commit-count guard (reject PRs with >1 commit) prevents approving PRs that haven't been properly rebased (e.g., auto-retargeted by GitHub after branch deletion) or that have conflict resolution commits (which require human approval).

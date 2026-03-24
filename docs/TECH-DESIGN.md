@@ -33,10 +33,11 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
 2. for each unsynced commit (in chronological order):
    a. generate clean snapshots of the private repo at both the current commit and its parent (stripping `private/` dirs and `!repo-sync: private-start`/`!repo-sync: private-end` regions from both)
    b. compute the diff between the two clean snapshots by committing both into a temporary git repo.  if the diff is empty, skip (all changes in this commit were internal-only)
-   c. check if a branch `repo-sync/private-to-public/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run)
+   c. check if a PR with head branch `repo-sync/private-to-public/<short-sha>` was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run).  if a MERGED PR exists, skip without updating the stack base.  if an OPEN PR exists, use its branch as the stack base and skip
    d. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   e. apply the delta to the public repo by cherry-picking the diff commit from the temporary repo.  cherry-pick uses three-way merge internally, so it handles context mismatches from un-synced public changes gracefully (unlike `git apply`, which requires exact context-line matches).  this preserves un-synced public changes as long as they don't directly conflict with the private commit's changes
-   g. commit with a generic message (e.g., `"repo-sync: sync from private"`).  **do not** use the source commit's message, as it could leak private information
+   e. apply the delta to the public repo by cherry-picking the diff commit from the temporary repo.  cherry-pick uses three-way merge internally, so it handles context mismatches from un-synced public changes gracefully.  if the cherry-pick produces no changes (delta already present in the public repo), skip.  if it conflicts, fail loudly
+   f. amend the commit with a generic message (e.g., `"repo-sync: sync from private"`) and the `Repo-Sync-Origin` trailer.  **do not** use the source commit's message, as it could leak private information
+   g. push the branch.  if the branch already exists on the remote (from a previous interrupted run where push succeeded but PR creation failed), verify the content matches and skip the push.  hard-fail if the content differs
    h. create a PR with the base set to the previous sync branch (or `main`)
 
 the sync workflow does **not** approve or enable auto-merge on any PRs.  approval is handled by the separate approve workflow when a PR reaches the bottom of the stack.
@@ -65,7 +66,7 @@ this tells git: "drop everything before `<merged-pr-branch-tip>` (i.e., the comm
 
 when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event on sync branches), the restack workflow:
 1. updates the watermark tag to point to the merge commit (so the source SHA is recoverable from its `Repo-Sync-Origin` trailer)
-2. identifies the next PR in the stack
+2. identifies the next PR in the stack by searching for an open PR whose base is the merged PR's branch.  if not found (because GitHub auto-retargeted the PR to the default branch after auto-deleting the merged branch), falls back to finding the oldest open `repo-sync/` PR targeting the default branch that has more than one commit (i.e., hasn't been rebased yet)
 3. attempts to rebase its branch onto the updated `main` using `git rebase --onto` (see merge strategy above)
 4. if the rebase succeeds: pushes the rebased branch
 5. updates the PR's base branch to `main` (always, regardless of rebase outcome -- this triggers the approve workflow)
@@ -75,18 +76,25 @@ the restack workflow does **not** invoke the conflict resolution agent, assign r
 
 ### approve workflow
 
-the approve workflow is a separate reusable workflow that runs when a `repo-sync/` PR targets the default branch (i.e., it is at the bottom of the stack).  it is triggered by `pull_request` events (`opened`, `synchronize`, `edited`) and uses a **second GitHub App** (the "approver bot") for submitting PR approvals.  a separate identity is required because GitHub does not allow a PR's author to approve it.
+the approve workflow is a separate reusable workflow that runs when a `repo-sync/` PR targets the default branch (i.e., it is at the bottom of the stack).  it is triggered by `pull_request` events (`opened`, `synchronize`, `edited`) and uses a **second GitHub App** (the "approver bot") for all operations.  a separate identity is required because GitHub does not allow a PR's author to approve it.
 
-the workflow:
+the workflow has two paths:
+
+**clean path (API-only, no git operations):**
 1. checks if the PR has already been handled (existing approval or `Repo-Sync-Assigned` trailer)
-2. attempts to rebase the PR onto the current default branch using `git rebase --onto origin/main <parent-of-tip> <branch>`.  since each sync PR has exactly one commit, `<parent-of-tip>` is `HEAD~1`.  this handles three cases:
-   - new PR already on `main`: no-op rebase
-   - PR successfully rebased by the restack workflow: no-op rebase
-   - PR where the restack workflow's rebase failed: performs the actual rebase
-3. if the rebase succeeds cleanly: pushes (if the branch changed), submits an approving review from the approver bot, and enables auto-merge
-4. if the rebase has conflicts: adds a `repo-sync:conflict` label, invokes the conflict resolution agent, and assigns a reviewer.  the approver bot does **not** approve conflict-resolved PRs -- a human must approve before merge
+2. checks that the PR has exactly one commit.  if it has more, the PR hasn't been rebased yet (e.g., GitHub auto-retargeted it after the base branch was deleted) or has a conflict resolution commit -- skip and let the restack workflow handle it
+3. checks PR mergeability via the GitHub API (with retries for `UNKNOWN` status)
+4. if mergeable: submits an approving review from the approver bot and enables auto-merge
 
-this provides a structural safety guarantee: the approver bot only approves PRs that have no conflicts.  any PR that required conflict resolution (whether by an agent or a human) will not have a bot approval and cannot merge until a human explicitly approves it.  the safety property comes from GitHub's permission model rather than from the bot's code being correct.
+**conflict path (git operations for agent resolution):**
+1. if the PR is `CONFLICTING`: checks out the repo, attempts `git rebase --onto` to produce conflict markers
+2. invokes the conflict resolution agent
+3. if the agent succeeds: pushes the resolved branch and assigns a reviewer (human sign-off required)
+4. if the agent fails: assigns a reviewer without a proposed resolution
+5. adds a `repo-sync:conflict` label and `Repo-Sync-Assigned` trailer
+6. the approver bot does **not** approve conflict-resolved PRs -- a human must approve before merge
+
+this provides a structural safety guarantee: the approver bot only approves PRs that have no conflicts and exactly one commit.  any PR that required conflict resolution (whether by an agent or a human) will not have a bot approval and cannot merge until a human explicitly approves it.  the safety property comes from GitHub's permission model rather than from the bot's code being correct.
 
 consuming repos must have their default branch configured to **require PR approvals** for this mechanism to work.  the approver bot's approval satisfies this requirement for clean PRs.
 
