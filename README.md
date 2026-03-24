@@ -48,6 +48,7 @@ before integrating, ensure the consuming repos have:
 2. **auto-merge enabled** as a repo-level setting.
 3. **squash merge** as the merge strategy for PRs, configured to **preserve the PR description** in the commit message.
 4. **branch protection rules** on `repo-sync/*` branches, so only the sync workflow's token can create or push to them.
+5. **required PR approvals** on the default branch.  the bot approves clean (conflict-free) sync PRs automatically; conflict-resolved PRs require human approval.  the "require review from someone other than the last pusher" branch protection setting must **not** be enabled.
 
 ### step 1: bootstrap the public repo
 

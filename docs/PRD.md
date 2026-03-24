@@ -45,7 +45,7 @@ this provides natural queuing semantics:
 * each PR in the stack shows only the diff for the single commit it corresponds to, making review easier
 * once a conflict is resolved and the base PR merges, automation restacks and proceeds with the next PR
 
-sync PRs use **squash and merge**.  the squash commit message includes the full PR title and description (ensuring the `Repo-Sync-Origin` trailer is preserved for infinite loop prevention).  clean (no-conflict) sync PRs are **auto-merged** without human review.
+sync PRs use **squash and merge**.  the squash commit message includes the full PR title and description (ensuring the `Repo-Sync-Origin` trailer is preserved for infinite loop prevention).  clean (no-conflict) sync PRs receive an approving review from the bot and are **auto-merged** without human review.  conflict-resolved PRs do not receive a bot approval, ensuring that a human must approve them before they can merge.
 
 stack management is implemented using a **custom tool** built on `git` and `gh` (no third-party dependency like graphite).  the tool handles:
 * creating branches stacked on the previous sync branch (or `main` if no stack exists)
@@ -136,3 +136,4 @@ consuming repos will need to provide:
 * any workflow configuration needed to identify the counterpart repo and authenticate cross-repo operations
 * source repos must use **squash merge** for PRs to their default branch (this ensures each merge produces exactly one commit, which is the unit of sync)
 * squash merge must be configured to **preserve the PR description in the commit message** (required for `Repo-Sync-Origin` trailer to survive into the merged commit, which is needed for infinite loop prevention and watermark tracking)
+* the default branch must have **required PR approvals** enabled.  the bot submits an approving review on clean (conflict-free) sync PRs, satisfying this requirement.  the "require review from someone other than the last pusher" branch protection setting must **not** be enabled, since the bot both pushes the sync branch and approves the PR

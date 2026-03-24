@@ -359,13 +359,16 @@ jobs:
       # ---------------------------------------------------------------
       # Enable auto-merge or assign reviewer based on outcome.
       # ---------------------------------------------------------------
-      - name: Enable auto-merge (clean rebase, no conflicts)
+      - name: Approve and enable auto-merge (clean rebase, no conflicts)
         if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'true'
         run: |
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
 
-          # Enable auto-merge (squash).  This waits for required status checks
-          # to pass before merging.
+          # Approve the PR and enable auto-merge.  The bot only approves PRs
+          # that rebased cleanly (no conflicts), ensuring conflict-resolved PRs
+          # always require a human approval before merging.
+          gh pr review "${NEXT_PR_NUMBER}" --approve \
+            --body "Clean rebase — no conflicts." || true
           gh pr merge "${NEXT_PR_NUMBER}" --auto --squash \
             || echo "Warning: could not enable auto-merge on PR #${NEXT_PR_NUMBER}."
 

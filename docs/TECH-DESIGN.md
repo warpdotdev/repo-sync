@@ -39,7 +39,7 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
    f. replace the working tree with the clean snapshot contents (full tree replacement, not patch-based -- handles renames, deletions, permission changes, and binary files correctly)
    g. commit with a generic message (e.g., `"repo-sync: sync from private"`).  **do not** use the source commit's message, as it could leak private information
    h. create a PR with the base set to the previous sync branch (or `main`)
-   i. if this PR is the bottom of the stack (base = `main`), enable GitHub auto-merge (auto-merge waits for required status checks to pass before merging).  do **not** enable auto-merge on PRs deeper in the stack -- they should only auto-merge after being restacked to the bottom
+   i. if this PR is the bottom of the stack (base = `main`), submit an approving review from the bot and enable GitHub auto-merge (auto-merge waits for the approval and any required status checks to pass before merging).  do **not** approve or enable auto-merge on PRs deeper in the stack -- they should only be approved and auto-merged after being restacked to the bottom
 
 **public-to-private:**
 1. identify unsynced commits on the public repo's default branch
@@ -49,7 +49,7 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
    c. cherry-pick the commit, preserving author and message
    d. if the cherry-pick has conflicts, handle them using the same conflict resolution flow as restacking (invoke agent, assign to human on failure)
    e. create a PR with the base set to the previous sync branch (or `main`)
-   f. if this PR is the bottom of the stack (base = `main`), enable GitHub auto-merge.  do **not** enable auto-merge on PRs deeper in the stack
+   f. if this PR is the bottom of the stack (base = `main`), submit an approving review from the bot and enable GitHub auto-merge.  do **not** approve or enable auto-merge on PRs deeper in the stack
 
 ### merge strategy
 
@@ -63,6 +63,16 @@ git rebase --onto main <merged-pr-branch-tip> <next-pr-branch>
 ```
 this tells git: "drop everything before `<merged-pr-branch-tip>` (i.e., the commits from the merged PR) and replay only the next PR's commits onto `main`."  since each sync PR has exactly one commit, this is clean.
 
+### auto-merge and approval mechanism
+
+clean sync PRs (no merge conflicts) are automatically merged using a two-step mechanism:
+1. the bot submits an approving review on the PR
+2. the bot enables GitHub auto-merge (squash), which waits for the approval and any required status checks to pass before merging
+
+this provides a structural safety guarantee: the bot only approves PRs that have no conflicts.  any PR that required conflict resolution (whether by an agent or a human) will not have a bot approval and cannot merge until a human explicitly approves it.  the safety property comes from GitHub's permission model rather than from the bot's code being correct.
+
+consuming repos must have their default branch configured to **require PR approvals** for this mechanism to work.  the GitHub App's approval satisfies this requirement for clean PRs.  the "require review from someone other than the last pusher" branch protection setting must **not** be enabled, since the bot both pushes the sync branch and approves the PR.
+
 ### restacking after merge
 
 when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event on sync branches), the workflow:
@@ -70,9 +80,9 @@ when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event 
 2. identifies the next PR in the stack
 3. rebases its branch onto the updated `main` using `git rebase --onto` (see merge strategy above)
 4. updates the PR's base branch to `main` (or the new bottom of the stack)
-5. if the rebase succeeds cleanly, enables GitHub auto-merge (waits for CI to pass, then merges automatically)
+5. if the rebase succeeds cleanly, submits an approving review from the bot and enables GitHub auto-merge (waits for CI to pass, then merges automatically)
 6. if CI fails after a clean rebase, assigns the PR to a human reviewer (same assignment logic as conflict resolution, but without invoking the agent)
-7. if the rebase has conflicts, invokes the conflict resolution agent.  after the agent commits a resolution (or fails), a reviewer is **always** requested -- agent-resolved conflicts require human sign-off before merging.  auto-merge is **not** enabled on conflict-resolved PRs
+7. if the rebase has conflicts, invokes the conflict resolution agent.  after the agent commits a resolution (or fails), a reviewer is **always** requested -- agent-resolved conflicts require human sign-off before merging.  the bot does **not** approve conflict-resolved PRs, so a human approval is required before they can merge
 
 the merged sync branch can be safely deleted after the watermark is updated (GitHub's auto-delete-on-merge is compatible with this approach).
 

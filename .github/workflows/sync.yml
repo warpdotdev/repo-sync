@@ -205,8 +205,10 @@ jobs:
               PR_URL=$(gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}")
               if [ "$IS_STACK_BOTTOM" = "true" ]; then
-                gh pr merge "$(echo "$PR_URL" | grep -oE '[0-9]+$')" \
-                  --repo "${PEER_REPO}" --auto --squash || true
+                PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+                gh pr review "${PR_NUMBER}" --repo "${PEER_REPO}" --approve \
+                  --body "Clean sync — no conflicts." || true
+                gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
               fi
               popd > /dev/null
               rm -rf "${SNAPSHOT_DIR}" "/tmp/diff-${SHORT_SHA}.patch" "${AGENT_OUT}"
@@ -266,6 +268,8 @@ jobs:
                 UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
                 gh pr edit "${PR_NUMBER}" --repo "${PEER_REPO}" --body "${UPDATED_BODY}"
               elif [ "$IS_STACK_BOTTOM" = "true" ]; then
+                gh pr review "${PR_NUMBER}" --repo "${PEER_REPO}" --approve \
+                  --body "Clean sync — no conflicts." || true
                 gh pr merge "${PR_NUMBER}" --repo "${PEER_REPO}" --auto --squash || true
               fi
               popd > /dev/null
