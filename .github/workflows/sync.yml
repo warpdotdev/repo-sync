@@ -230,7 +230,14 @@ jobs:
               git checkout -B _sync_work "origin/${STACK_BASE_BRANCH}" 2>/dev/null \
                 || git checkout -B _sync_work "${STACK_BASE_BRANCH}"
               git checkout -b "${SYNC_BRANCH}"
-              git apply "${PATCH_FILE}"
+              if ! git apply "${PATCH_FILE}"; then
+                popd > /dev/null
+                echo "::error::Patch apply failed for ${SOURCE_SHA}. Un-synced public changes likely overlap with this private commit. See docs/RUNBOOK.md."
+                [ -n "$SLACK_WEBHOOK_URL" ] && curl -s -X POST -H 'Content-type: application/json' \
+                  --data "{\"text\":\"repo-sync: patch apply failed for ${SHORT_SHA} in ${SOURCE_REPO}. Un-synced public changes overlap. See RUNBOOK.md.\"}" \
+                  "$SLACK_WEBHOOK_URL" || true
+                exit 1
+              fi
               git add -A
               git commit -m "repo-sync: sync from private" -m "Repo-Sync-Origin: ${SOURCE_REPO}@${SOURCE_SHA}"
 
