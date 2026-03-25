@@ -24,3 +24,18 @@ all items below have been addressed in TECH-DESIGN.md:
 * ~~what are the exact GitHub permissions, tokens, and repo settings?~~ -- GitHub App with `contents:write`, `pull_requests:write`, `metadata:read`
 
 ## open
+
+### watermark update robustness
+
+the watermark tag is updated by the restack workflow, which triggers on sync PR merge events.  if the restack workflow is delayed or fails before updating the watermark, the next sync workflow run will reprocess already-synced commits, potentially creating duplicate sync PRs.
+
+the idempotency guard prevents duplicate PRs from being created (it checks for existing PRs with matching head branches), so the impact is wasted work rather than data corruption.  however, this is still a robustness concern:
+
+* github actions does not guarantee timely execution — workflows can be queued for minutes during high load
+* if the restack workflow fails mid-run (after the watermark update but before rebasing), the watermark is correct but the next PR is stuck.  if it fails before the watermark update, the watermark is stale
+* the sync workflow's concurrency group (`cancel-in-progress: false`) means a stale-watermark run will queue and eventually execute, but it will reprocess commits that were already synced
+
+potential mitigations to explore:
+* **advance the watermark in the sync workflow** — update the watermark as each sync PR is created (not just when it merges).  this decouples watermark tracking from the restack workflow's execution.  downside: the watermark would point to a PR that hasn't merged yet, which changes the recovery semantics
+* **use the idempotency guard as the primary deduplication mechanism** — accept that the watermark may be stale and rely on the per-commit idempotency checks to skip already-processed commits.  this is already the behavior, but it's not intentional and the extra API calls per commit add latency
+* **dual watermark** — maintain a "last-created" watermark (updated by the sync workflow) and a "last-merged" watermark (updated by the restack workflow).  the sync workflow uses the "last-created" watermark to avoid reprocessing, while the "last-merged" watermark is used for conflict detection and recovery
