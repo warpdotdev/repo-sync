@@ -120,13 +120,10 @@ jobs:
                   gh pr edit "${PR_NUMBER}" --body "${UPDATED_BODY}"
                   ;;
                 stuck_stack)
-                  echo "PR #${PR_NUMBER}: stuck stack. Dispatching restack."
-                  gh workflow run restack.yml \
-                    -f pr_number="${PR_NUMBER}" \
-                    -f public_repo="${{ inputs.public_repo }}" \
-                    -f private_repo="${{ inputs.private_repo }}" \
-                    -f escalate_to="${ESCALATE_TO}" \
-                    2>/dev/null || echo "Warning: could not dispatch restack for PR #${PR_NUMBER}."
+                  echo "PR #${PR_NUMBER}: stuck stack. Adding repo-sync:needs-restack label."
+                  gh label create "repo-sync:needs-restack" --color "0E8A16" \
+                    --description "Sync PR needs rebasing before approval" 2>/dev/null || true
+                  gh pr edit "${PR_NUMBER}" --add-label "repo-sync:needs-restack" 2>/dev/null || true
                   ;;
               esac
             done

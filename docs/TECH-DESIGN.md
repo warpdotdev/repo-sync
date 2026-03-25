@@ -64,35 +64,47 @@ this tells git: "drop everything before `<merged-pr-branch-tip>` (i.e., the comm
 
 ### restacking after merge
 
-when a sync PR is merged (detected via a `pull_request` `closed`+`merged` event on sync branches), the restack workflow:
+the restack workflow has two trigger modes:
+
+**post-merge mode** (triggered by `pull_request` `closed`+`merged` on sync branches):
 1. updates the watermark tag to point to the merge commit (so the source SHA is recoverable from its `Repo-Sync-Origin` trailer)
-2. identifies the next PR in the stack by searching for an open PR whose base is the merged PR's branch.  if not found (because GitHub auto-retargeted the PR to the default branch after auto-deleting the merged branch), falls back to finding the oldest open `repo-sync/` PR targeting the default branch that has more than one commit (i.e., hasn't been rebased yet)
-3. attempts to rebase its branch onto the updated `main` using `git rebase --onto` (see merge strategy above)
-4. if the rebase succeeds: pushes the rebased branch
-5. updates the PR's base branch to `main` (always, regardless of rebase outcome -- this triggers the approve workflow)
-6. if the rebase failed: aborts the rebase.  the approve workflow handles conflict resolution when it runs
+2. identifies the next PR in the stack by searching for an open PR whose base is the merged PR's branch.  if not found (because GitHub auto-retargeted the PR to the default branch after auto-deleting the merged branch), falls back to finding the oldest open `repo-sync/` PR targeting the default branch that has more than one commit and no `repo-sync:conflict` label
+3. rebases and pushes the PR (see rebase logic below)
+
+**needs-restack mode** (triggered by `pull_request` `labeled` with `repo-sync:needs-restack`):
+1. the approve workflow adds this label when it detects a PR with more than one commit (e.g., GitHub auto-retargeted it)
+2. rebases and pushes the labeled PR (see rebase logic below).  no watermark update
+
+**rebase logic (both modes):**
+1. find the sync commit by searching backwards from HEAD for the most recent commit with a `Repo-Sync-Origin` trailer.  use its parent as the old base for `git rebase --onto main`.  this correctly handles both the normal case (sync commit at the tip) and the resolution case (sync commit followed by resolution commits) -- it drops old stack commits while preserving the sync commit and anything after it
+2. after rebase, verify the branch SHA actually changed.  if the rebase was a no-op (SHA unchanged), do **not** push -- log an error and leave the `repo-sync:needs-restack` label for human investigation
+3. if the branch changed, force-push the rebased branch
+4. remove the `repo-sync:needs-restack` label (if present)
+5. update the PR's base branch to `main` (if not already)
 
 the restack workflow does **not** invoke the conflict resolution agent, assign reviewers, or enable auto-merge.  all of that is the approve workflow's responsibility.
 
+the restack workflow is serialized per repo via a concurrency group (`cancel-in-progress: false`) to prevent concurrent rebases.
+
 ### approve workflow
 
-the approve workflow is a separate reusable workflow that runs when a `repo-sync/` PR targets the default branch (i.e., it is at the bottom of the stack).  it is triggered by `pull_request` events (`opened`, `synchronize`, `edited`) and uses a **second GitHub App** (the "approver bot") for all operations.  a separate identity is required because GitHub does not allow a PR's author to approve it.
+the approve workflow is a separate reusable workflow that runs when a `repo-sync/` PR targets the default branch (i.e., it is at the bottom of the stack).  it is triggered by `pull_request` events (`opened`, `synchronize`, `edited`, `labeled`) and uses a **second GitHub App** (the "approver bot") for all operations.  a separate identity is required because GitHub does not allow a PR's author to approve it.
 
-the workflow has two paths:
+the workflow is serialized per PR via a concurrency group (`cancel-in-progress: false`).  multiple events can fire near-simultaneously for the same PR; the concurrency group ensures only one run proceeds at a time, with queued runs exiting early via the skip checks.
 
-**clean path (API-only, no git operations):**
-1. checks if the PR has already been handled (existing approval or `Repo-Sync-Assigned` trailer)
-2. checks that the PR has exactly one commit.  if it has more, the PR hasn't been rebased yet (e.g., GitHub auto-retargeted it after the base branch was deleted) or has a conflict resolution commit -- skip and let the restack workflow handle it
-3. checks PR mergeability via the GitHub API (with retries for `UNKNOWN` status)
-4. if mergeable: submits an approving review from the approver bot and enables auto-merge
+**decision logic (in order):**
+1. **already handled?** if the PR has an existing approval OR a `Repo-Sync-Assigned` trailer → skip
+2. **commit count?** if the PR has ≠ 1 commit:
+   - if `repo-sync:needs-restack` label is already present → skip (restack already knows)
+   - if label is absent → add `repo-sync:needs-restack` label → skip.  the label fires a `labeled` event that triggers the restack workflow
+3. **mergeable?** check via GitHub API (with retries for `UNKNOWN`):
+   - `MERGEABLE` → approve + enable auto-merge (API-only, no git operations)
+   - `CONFLICTING` → conflict path (checkout, rebase for conflict markers, invoke agent, assign reviewer, add `Repo-Sync-Assigned` trailer, add `repo-sync:conflict` label).  do NOT approve
+   - `UNKNOWN` after retries → skip (next event will re-trigger)
 
-**conflict path (git operations for agent resolution):**
-1. if the PR is `CONFLICTING`: checks out the repo, attempts `git rebase --onto` to produce conflict markers
-2. invokes the conflict resolution agent
-3. if the agent succeeds: pushes the resolved branch and assigns a reviewer (human sign-off required)
-4. if the agent fails: assigns a reviewer without a proposed resolution
-5. adds a `repo-sync:conflict` label and `Repo-Sync-Assigned` trailer
-6. the approver bot does **not** approve conflict-resolved PRs -- a human must approve before merge
+**loop prevention:** the approve workflow only adds the `repo-sync:needs-restack` label if it is **absent**.  this prevents re-triggering the restack workflow if it has already been notified.  GitHub also does not fire a `labeled` event for a label that is already present, providing a second layer of protection.
+
+**key invariant:** the approve workflow NEVER force-pushes or rebases clean PRs.  git operations only happen in the conflict resolution path.
 
 this provides a structural safety guarantee: the approver bot only approves PRs that have no conflicts and exactly one commit.  any PR that required conflict resolution (whether by an agent or a human) will not have a bot approval and cannot merge until a human explicitly approves it.  the safety property comes from GitHub's permission model rather than from the bot's code being correct.
 
@@ -244,7 +256,7 @@ the escalation workflow checks all open sync PRs (identified by `repo-sync/` hea
 
 1. **timeout escalation:** if the PR has a `Repo-Sync-Assigned` trailer and the elapsed time since the timestamp exceeds `escalate_after`, a review is requested from `escalate_to`.
 2. **CI failure detection:** if the PR has auto-merge enabled but CI has failed (required status checks are not passing), the workflow disables auto-merge, requests a review from the appropriate person (using the same assignment logic as conflict resolution), and appends a `Repo-Sync-Assigned` trailer to begin the escalation clock.
-3. **stuck stack recovery:** if a sync PR's base branch no longer exists (the PR below it was merged and the branch deleted) but the PR has not been restacked, the escalation cron dispatches the restack workflow for that PR (via `workflow_dispatch` or equivalent).  the actual restack logic lives only in the restack workflow, keeping a single codepath for all restacking.  the restack workflow's concurrency group ensures that simultaneous triggers (e.g., from a PR merge event and a cron dispatch) are serialized.
+3. **stuck stack recovery:** if a sync PR's base branch no longer exists (the PR below it was merged and the branch deleted) but the PR has not been restacked, the escalation cron adds the `repo-sync:needs-restack` label to the PR.  this triggers the restack workflow via the consuming repo's `labeled` event handler, using the same mechanism as the approve workflow.  the actual restack logic lives only in the restack workflow, keeping a single codepath for all restacking.
 
 ### CI validation action
 

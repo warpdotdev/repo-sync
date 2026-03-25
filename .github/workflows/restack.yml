@@ -307,13 +307,27 @@ jobs:
 
           REBASE_SUCCEEDED="true"
           git checkout "${NEXT_BRANCH}"
+          PRE_REBASE_SHA=$(git rev-parse HEAD)
 
           if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
-            # Stuck-stack recovery: the PR's base branch no longer exists.
-            # Rebase the PR's commits onto the current default branch.
-            # Use the merge-base of the PR branch and origin/default as the
-            # old base, so only the PR's own commits are replayed.
-            OLD_BASE=$(git merge-base "origin/${DEFAULT_BRANCH}" "${NEXT_BRANCH}")
+            # Needs-restack or stuck-stack recovery: find the sync commit
+            # (most recent commit with Repo-Sync-Origin trailer) and use
+            # its parent as the old base.  This correctly drops old stack
+            # commits while preserving the sync commit and any resolution
+            # commits after it.
+            SYNC_COMMIT=""
+            for SHA in $(git log --format='%H' HEAD); do
+              if git log -1 --format='%B' "$SHA" | grep -q 'Repo-Sync-Origin:'; then
+                SYNC_COMMIT="$SHA"
+                break
+              fi
+            done
+            if [ -z "$SYNC_COMMIT" ]; then
+              echo "::error::No commit with Repo-Sync-Origin trailer found on branch ${NEXT_BRANCH}."
+              echo "rebase_succeeded=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            OLD_BASE=$(git rev-parse "${SYNC_COMMIT}~1")
           else
             # Normal path: use the merged PR's head commit SHA as old base.
             OLD_BASE="${{ steps.merged_pr.outputs.merged_head_sha }}"
@@ -325,6 +339,7 @@ jobs:
           fi
 
           echo "rebase_succeeded=${REBASE_SUCCEEDED}" >> "$GITHUB_OUTPUT"
+          echo "pre_rebase_sha=${PRE_REBASE_SHA}" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
       # Push the rebased branch and update the PR's base.
@@ -338,9 +353,19 @@ jobs:
 
       - name: Push rebased branch
         if: steps.next_pr.outputs.found == 'true' && steps.rebase.outputs.rebase_succeeded == 'true'
+        id: push
         run: |
           NEXT_BRANCH="${{ steps.next_pr.outputs.head_branch }}"
-          git push origin "${NEXT_BRANCH}" --force-with-lease
+          POST_REBASE_SHA=$(git rev-parse HEAD)
+          PRE_REBASE_SHA="${{ steps.rebase.outputs.pre_rebase_sha }}"
+
+          if [ "$POST_REBASE_SHA" = "$PRE_REBASE_SHA" ]; then
+            echo "::warning::Rebase was a no-op (SHA unchanged). Not pushing. Leaving repo-sync:needs-restack label for investigation."
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          else
+            git push origin "${NEXT_BRANCH}" --force-with-lease
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Update PR base branch
         if: steps.next_pr.outputs.found == 'true'
@@ -357,9 +382,10 @@ jobs:
           echo "Updated PR #${NEXT_PR_NUMBER} base to ${DEFAULT_BRANCH}."
 
       - name: Remove needs-restack label
-        if: steps.next_pr.outputs.found == 'true'
+        if: steps.next_pr.outputs.found == 'true' && steps.push.outputs.pushed == 'true'
         run: |
           NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
-          # Remove the label if present (may have been added by the approve
-          # workflow or manually).  Keeps state clean after restacking.
+          # Remove the label only if we actually pushed (rebase changed the
+          # branch).  If the rebase was a no-op, leave the label for
+          # investigation.
           gh pr edit "${NEXT_PR_NUMBER}" --remove-label "repo-sync:needs-restack" 2>/dev/null || true
