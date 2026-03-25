@@ -51,6 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     # Only run for repo-sync/ branches targeting the default branch.
     if: startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    # Serialize approval runs per PR.  Multiple events (opened, synchronize,
+    # edited) can fire near-simultaneously; without this, parallel runs would
+    # all approve before any completes.
+    concurrency:
+      group: repo-sync-approve-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       contents: write
       pull-requests: write
