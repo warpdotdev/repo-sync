@@ -287,9 +287,8 @@ jobs:
                 if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
                   echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
                 else
-                  popd > /dev/null
-                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Manual intervention required."
-                  exit 1
+                  echo "::warning::Branch ${SYNC_BRANCH} exists on remote with different content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Force-pushing (no PR exists for this branch)."
+                  git push origin "${SYNC_BRANCH}" --force
                 fi
               else
                 git push origin "${SYNC_BRANCH}"
@@ -338,9 +337,8 @@ jobs:
                 if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
                   echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
                 else
-                  popd > /dev/null
-                  echo "::error::Branch ${SYNC_BRANCH} exists on remote with DIFFERENT content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Manual intervention required."
-                  exit 1
+                  echo "::warning::Branch ${SYNC_BRANCH} exists on remote with different content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Force-pushing (no PR exists for this branch)."
+                  git push origin "${SYNC_BRANCH}" --force
                 fi
               else
                 git push origin "${SYNC_BRANCH}"
