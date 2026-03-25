@@ -62,19 +62,7 @@ def _write_github_output(key: str, value: str) -> None:
             f.write(f"{key}={value}\n")
 
 
-def cmd_loop_check(args: argparse.Namespace) -> None:
-    """Check if the triggering commit is sync-originated."""
-    git = GitOps(args.repo_dir)
-    gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
-
-    result = is_sync_originated(git, gh, args.trigger_sha)
-    output = {"is_sync": result}
-    json.dump(output, sys.stdout)
-    print()
-    _write_github_output("is_sync", str(result).lower())
-
-
-def cmd_read_watermark(args: argparse.Namespace) -> None:
+def cmd_read_watermark
     """Read the watermark from the peer repo via the GitHub API.
 
     The watermark tag lives in the peer repo (the target of sync), not the
@@ -333,13 +321,6 @@ def main() -> None:
         description="CLI entrypoints for repo-sync workflow orchestration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # loop-check.
-    p = subparsers.add_parser("loop-check", help="Check if commit is sync-originated.")
-    p.add_argument("--repo-dir", required=True)
-    p.add_argument("--gh-repo", required=True)
-    p.add_argument("--trigger-sha", required=True)
-    p.set_defaults(func=cmd_loop_check)
 
     # read-watermark.
     p = subparsers.add_parser("read-watermark", help="Read the watermark tag.")
