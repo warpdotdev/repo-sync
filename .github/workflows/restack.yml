@@ -309,29 +309,24 @@ jobs:
           git checkout "${NEXT_BRANCH}"
           PRE_REBASE_SHA=$(git rev-parse HEAD)
 
-          if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
-            # Needs-restack or stuck-stack recovery: find the sync commit
-            # (most recent commit with Repo-Sync-Origin trailer) and use
-            # its parent as the old base.  This correctly drops old stack
-            # commits while preserving the sync commit and any resolution
-            # commits after it.
-            SYNC_COMMIT=""
-            for SHA in $(git log --format='%H' HEAD); do
-              if git log -1 --format='%B' "$SHA" | grep -q 'Repo-Sync-Origin:'; then
-                SYNC_COMMIT="$SHA"
-                break
-              fi
-            done
-            if [ -z "$SYNC_COMMIT" ]; then
-              echo "::error::No commit with Repo-Sync-Origin trailer found on branch ${NEXT_BRANCH}."
-              echo "rebase_succeeded=false" >> "$GITHUB_OUTPUT"
-              exit 0
+          # Find the sync commit (most recent commit with Repo-Sync-Origin
+          # trailer) and use its parent as the old base.  This is used for
+          # ALL modes — the merged_head_sha approach is fragile because
+          # restacking changes the head SHA of the merged PR, so it may not
+          # be an ancestor of the next PR's branch.
+          SYNC_COMMIT=""
+          for SHA in $(git log --format='%H' HEAD); do
+            if git log -1 --format='%B' "$SHA" | grep -q 'Repo-Sync-Origin:'; then
+              SYNC_COMMIT="$SHA"
+              break
             fi
-            OLD_BASE=$(git rev-parse "${SYNC_COMMIT}~1")
-          else
-            # Normal path: use the merged PR's head commit SHA as old base.
-            OLD_BASE="${{ steps.merged_pr.outputs.merged_head_sha }}"
+          done
+          if [ -z "$SYNC_COMMIT" ]; then
+            echo "::error::No commit with Repo-Sync-Origin trailer found on branch ${NEXT_BRANCH}."
+            echo "rebase_succeeded=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          OLD_BASE=$(git rev-parse "${SYNC_COMMIT}~1")
 
           if ! git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${NEXT_BRANCH}" 2>/tmp/rebase-error.txt; then
             echo "Rebase has conflicts."
