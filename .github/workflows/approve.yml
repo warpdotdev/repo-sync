@@ -53,10 +53,12 @@ jobs:
     if: startsWith(github.event.pull_request.head.ref, 'repo-sync/')
     # Serialize approval runs per PR.  Multiple events (opened, synchronize,
     # edited) can fire near-simultaneously; without this, parallel runs would
-    # all approve before any completes.
+    # all approve before any completes.  Use cancel-in-progress: false so a
+    # running approval completes fully (avoiding partial state like approved
+    # but auto-merge not enabled); the queued run will skip via skip_check.
     concurrency:
       group: repo-sync-approve-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
