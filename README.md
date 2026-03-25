@@ -100,7 +100,7 @@ on:
   push:
     branches: [main]            # triggers sync creation
   pull_request:
-    types: [closed, opened, synchronize, edited]
+    types: [closed, opened, synchronize, edited, labeled]
     branches: [main]            # triggers restack + approve
   schedule:
     - cron: "*/15 * * * *"      # triggers escalation checks
@@ -120,7 +120,9 @@ jobs:
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 
   restack:
-    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'repo-sync:needs-restack' && startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
       public_repo: warpdotdev/warp-public

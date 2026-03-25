@@ -23,7 +23,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [closed, opened, synchronize, edited]
+    types: [closed, opened, synchronize, edited, labeled]
     branches: [main]
   schedule:
     # Run escalation checks every 15 minutes.
@@ -57,9 +57,13 @@ jobs:
   # -----------------------------------------------------------------------
   restack:
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'repo-sync:needs-restack' &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
     uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
     with:
       public_repo: warpdotdev/warp-public

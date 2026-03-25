@@ -348,3 +348,11 @@ jobs:
           # that triggers the approve workflow.
           gh pr edit "${NEXT_PR_NUMBER}" --base "${DEFAULT_BRANCH}"
           echo "Updated PR #${NEXT_PR_NUMBER} base to ${DEFAULT_BRANCH}."
+
+      - name: Remove needs-restack label
+        if: steps.next_pr.outputs.found == 'true'
+        run: |
+          NEXT_PR_NUMBER="${{ steps.next_pr.outputs.number }}"
+          # Remove the label if present (may have been added by the approve
+          # workflow or manually).  Keeps state clean after restacking.
+          gh pr edit "${NEXT_PR_NUMBER}" --remove-label "repo-sync:needs-restack" 2>/dev/null || true

@@ -54,7 +54,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      actions: write
     env:
       PUBLIC_REPO: ${{ inputs.public_repo }}
       PRIVATE_REPO: ${{ inputs.private_repo }}
@@ -127,22 +126,17 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # If the PR needs rebasing, dispatch the restack workflow to handle it.
-      # The restack workflow's force-push will trigger a synchronize event
+      # If the PR needs rebasing, add the repo-sync:needs-restack label.
+      # The consuming repo's workflow triggers the restack job on this label,
+      # and the restack workflow's force-push triggers a synchronize event
       # that re-runs this approval workflow with the now-single-commit PR.
-      - name: Dispatch restack for needs-rebase PR
+      - name: Label PR for restack
         if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          echo "Dispatching restack workflow for PR #${PR_NUMBER}."
-          gh workflow run restack.yml \
-            -f pr_number="${PR_NUMBER}" \
-            -f public_repo="${PUBLIC_REPO}" \
-            -f private_repo="${PRIVATE_REPO}" \
-            -f escalate_to="${ESCALATE_TO}" \
-            2>/dev/null || echo "::warning::Could not dispatch restack for PR #${PR_NUMBER}."
+          gh label create "repo-sync:needs-restack" --color "0E8A16" \
+            --description "Sync PR needs rebasing before approval" 2>/dev/null || true
+          gh pr edit "${PR_NUMBER}" --add-label "repo-sync:needs-restack"
 
       # ---------------------------------------------------------------
       # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
