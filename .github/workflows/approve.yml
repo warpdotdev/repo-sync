@@ -134,23 +134,6 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # If the PR needs rebasing and hasn't already been flagged, add the
-      # repo-sync:needs-restack label.  Only add if absent to prevent
-      # re-triggering the restack workflow in a loop.
-      - name: Label PR for restack
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'true'
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          # Check if label is already present.
-          HAS_LABEL=$(gh pr view "${PR_NUMBER}" --json labels --jq '[.labels[].name] | index("repo-sync:needs-restack") // empty')
-          if [ -n "$HAS_LABEL" ]; then
-            echo "repo-sync:needs-restack label already present. Skipping."
-          else
-            gh label create "repo-sync:needs-restack" --color "0E8A16" \
-              --description "Sync PR needs rebasing before approval" 2>/dev/null || true
-            gh pr edit "${PR_NUMBER}" --add-label "repo-sync:needs-restack"
-          fi
-
       # ---------------------------------------------------------------
       # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
       # status (GitHub computes mergeability asynchronously).

@@ -94,17 +94,13 @@ the workflow is serialized per PR via a concurrency group (`cancel-in-progress: 
 
 **decision logic (in order):**
 1. **already handled?** if the PR has an existing approval OR a `Repo-Sync-Assigned` trailer → skip
-2. **commit count?** if the PR has ≠ 1 commit:
-   - if `repo-sync:needs-restack` label is already present → skip (restack already knows)
-   - if label is absent → add `repo-sync:needs-restack` label → skip.  the label fires a `labeled` event that triggers the restack workflow
+2. **commit count?** if the PR has ≠ 1 commit → skip.  the restack workflow handles restacking (either post-merge or via the `repo-sync:needs-restack` label, which can be added manually or by the escalation cron)
 3. **mergeable?** check via GitHub API (with retries for `UNKNOWN`):
    - `MERGEABLE` → approve + enable auto-merge (API-only, no git operations)
    - `CONFLICTING` → conflict path (checkout, rebase for conflict markers, invoke agent, assign reviewer, add `Repo-Sync-Assigned` trailer, add `repo-sync:conflict` label).  do NOT approve
    - `UNKNOWN` after retries → skip (next event will re-trigger)
 
-**loop prevention:** the approve workflow only adds the `repo-sync:needs-restack` label if it is **absent**.  this prevents re-triggering the restack workflow if it has already been notified.  GitHub also does not fire a `labeled` event for a label that is already present, providing a second layer of protection.
-
-**key invariant:** the approve workflow NEVER force-pushes or rebases clean PRs.  git operations only happen in the conflict resolution path.
+**key invariant:** the approve workflow NEVER force-pushes, rebases, or adds labels to trigger other workflows.  git operations only happen in the conflict resolution path.  the `repo-sync:needs-restack` label is managed by the restack workflow (removal), escalation cron (addition for stuck PRs), and human operators (manual addition) -- not by the approve workflow.
 
 this provides a structural safety guarantee: the approver bot only approves PRs that have no conflicts and exactly one commit.  any PR that required conflict resolution (whether by an agent or a human) will not have a bot approval and cannot merge until a human explicitly approves it.  the safety property comes from GitHub's permission model rather than from the bot's code being correct.
 
