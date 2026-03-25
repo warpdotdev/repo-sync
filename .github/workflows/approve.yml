@@ -54,6 +54,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     env:
       PUBLIC_REPO: ${{ inputs.public_repo }}
       PRIVATE_REPO: ${{ inputs.private_repo }}
@@ -131,6 +132,8 @@ jobs:
       # that re-runs this approval workflow with the now-single-commit PR.
       - name: Dispatch restack for needs-rebase PR
         if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           echo "Dispatching restack workflow for PR #${PR_NUMBER}."
