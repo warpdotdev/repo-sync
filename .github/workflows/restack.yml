@@ -257,14 +257,16 @@ jobs:
             # Fallback: if GitHub auto-retargeted the next PR to the default
             # branch (because the merged branch was auto-deleted), search for
             # the oldest open repo-sync/ PR targeting the default branch that
-            # still needs rebasing (more than one commit).
+            # still needs rebasing (more than one commit).  Exclude PRs with
+            # the repo-sync:conflict label — those have a conflict resolution
+            # commit and should not be rebased.
             if [ -z "$NEXT_PR" ]; then
               BRANCH_PREFIX="repo-sync/${DIRECTION}/"
               NEXT_PR=$(gh pr list \
                 --state open \
                 --base "${DEFAULT_BRANCH}" \
-                --json number,headRefName,commits \
-                --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}\")) | select(.commits | length > 1)] | sort_by(.number) | .[0].number // empty")
+                --json number,headRefName,commits,labels \
+                --jq "[.[] | select(.headRefName | startswith(\"${BRANCH_PREFIX}\")) | select(.commits | length > 1) | select((.labels | map(.name) | index(\"repo-sync:conflict\")) | not)] | sort_by(.number) | .[0].number // empty")
             fi
 
             if [ -z "$NEXT_PR" ]; then

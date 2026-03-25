@@ -120,11 +120,26 @@ jobs:
           COMMIT_COUNT=$(gh pr view "${PR_NUMBER}" --json commits --jq '.commits | length')
           echo "PR has ${COMMIT_COUNT} commit(s)."
           if [ "$COMMIT_COUNT" -ne 1 ]; then
-            echo "PR has ${COMMIT_COUNT} commits (expected 1). Needs rebase. Skipping."
+            echo "PR has ${COMMIT_COUNT} commits (expected 1). Needs rebase."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # If the PR needs rebasing, dispatch the restack workflow to handle it.
+      # The restack workflow's force-push will trigger a synchronize event
+      # that re-runs this approval workflow with the now-single-commit PR.
+      - name: Dispatch restack for needs-rebase PR
+        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'true'
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "Dispatching restack workflow for PR #${PR_NUMBER}."
+          gh workflow run restack.yml \
+            -f pr_number="${PR_NUMBER}" \
+            -f public_repo="${PUBLIC_REPO}" \
+            -f private_repo="${PRIVATE_REPO}" \
+            -f escalate_to="${ESCALATE_TO}" \
+            2>/dev/null || echo "::warning::Could not dispatch restack for PR #${PR_NUMBER}."
 
       # ---------------------------------------------------------------
       # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
