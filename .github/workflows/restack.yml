@@ -66,11 +66,15 @@ concurrency:
 jobs:
   restack:
     runs-on: ubuntu-latest
-    # Only run if the PR was actually merged (not just closed) and was a sync
-    # branch — or if dispatched manually for stuck stack recovery.
+    # Run if: (a) the PR was merged (normal restack), (b) dispatched for
+    # stuck stack recovery, or (c) labeled with repo-sync:needs-restack
+    # (triggered by the approve workflow for auto-retargeted PRs).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
+      (github.event.action == 'labeled' &&
+       github.event.label.name == 'repo-sync:needs-restack' &&
        startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
     permissions:
       contents: write
@@ -137,22 +141,25 @@ jobs:
       - name: Identify PR context
         id: merged_pr
         run: |
-          # Stuck-stack recovery: the dispatched PR is the STUCK (open) PR
-          # that needs restacking, NOT a merged PR.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            STUCK_PR="${{ github.event.inputs.pr_number || '' }}"
+          # Stuck-stack recovery or needs-restack: the PR is open and needs
+          # rebasing, NOT a merged PR.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event.action }}" = "labeled" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              STUCK_PR="${{ github.event.inputs.pr_number || '' }}"
+            else
+              STUCK_PR="${{ github.event.pull_request.number }}"
+            fi
             if [ -z "$STUCK_PR" ]; then
-              echo "::error::No PR number provided for workflow_dispatch."
+              echo "::error::No PR number provided."
               exit 1
             fi
             echo "mode=stuck_recovery" >> "$GITHUB_OUTPUT"
             echo "stuck_pr=${STUCK_PR}" >> "$GITHUB_OUTPUT"
-            # Get the stuck PR's head branch and current base.
             STUCK_HEAD=$(gh pr view "$STUCK_PR" --json headRefName --jq '.headRefName')
             STUCK_BASE=$(gh pr view "$STUCK_PR" --json baseRefName --jq '.baseRefName')
             echo "stuck_head_branch=${STUCK_HEAD}" >> "$GITHUB_OUTPUT"
             echo "stuck_base_branch=${STUCK_BASE}" >> "$GITHUB_OUTPUT"
-            echo "Stuck PR #${STUCK_PR}: head=${STUCK_HEAD}, base=${STUCK_BASE}."
+            echo "Needs-restack PR #${STUCK_PR}: head=${STUCK_HEAD}, base=${STUCK_BASE}."
             exit 0
           fi
 
