@@ -39,10 +39,12 @@ from repo_sync.workflows.escalation import (
     parse_duration,
 )
 from repo_sync.workflows.restack_workflow import determine_direction
+from repo_sync.workflows.approve_logic import run_approve
 from repo_sync.workflows.create_sync_prs import (
     PermanentSyncError,
     create_sync_prs,
 )
+from repo_sync.workflows.restack_logic import RestackError, run_restack
 from repo_sync.workflows.sync import (
     SyncConfig,
     build_public_to_private_description,
@@ -210,6 +212,45 @@ def cmd_parse_trailer(args: argparse.Namespace) -> None:
     print()
 
 
+def cmd_restack_pr(args: argparse.Namespace) -> None:
+    """Run the restack workflow logic."""
+    git = GitOps(args.repo_dir)
+    gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
+
+    try:
+        run_restack(
+            git=git,
+            gh=gh,
+            mode=args.mode,
+            direction=args.direction,
+            default_branch=args.default_branch,
+            watermark_repo=args.watermark_repo,
+            merge_sha=args.merge_sha or None,
+            merged_head_branch=args.merged_head_branch or None,
+            stuck_pr_number=args.stuck_pr_number or None,
+            stuck_head_branch=args.stuck_head_branch or None,
+        )
+    except RestackError as e:
+        print(f"::error::{e}")
+        sys.exit(1)
+
+
+def cmd_approve_pr(args: argparse.Namespace) -> None:
+    """Run the approve workflow logic."""
+    gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
+    git = GitOps(args.repo_dir) if args.repo_dir else None
+
+    run_approve(
+        gh=gh,
+        repo=args.gh_repo,
+        pr_number=args.pr_number,
+        pr_branch=args.pr_branch,
+        default_branch=args.default_branch,
+        escalate_to=args.escalate_to,
+        git=git,
+    )
+
+
 def cmd_create_sync_prs(args: argparse.Namespace) -> None:
     """Create sync PRs for unsynced commits."""
     source_git = GitOps(args.source_repo_dir)
@@ -353,6 +394,32 @@ def main() -> None:
     p.add_argument("--pr-number", required=True, type=int)
     p.add_argument("--gh-repo", required=True)
     p.set_defaults(func=cmd_parse_trailer)
+
+    # restack-pr.
+    p = subparsers.add_parser("restack-pr", help="Restack the next sync PR.")
+    p.add_argument("--mode", required=True, choices=["normal", "stuck_recovery"])
+    p.add_argument("--direction", required=True)
+    p.add_argument("--default-branch", required=True)
+    p.add_argument("--watermark-repo", required=True)
+    p.add_argument("--repo-dir", required=True)
+    p.add_argument("--gh-repo", required=True)
+    # Post-merge mode fields.
+    p.add_argument("--merge-sha", default="")
+    p.add_argument("--merged-head-branch", default="")
+    # Stuck-recovery mode fields.
+    p.add_argument("--stuck-pr-number", type=int, default=0)
+    p.add_argument("--stuck-head-branch", default="")
+    p.set_defaults(func=cmd_restack_pr)
+
+    # approve-pr.
+    p = subparsers.add_parser("approve-pr", help="Approve or handle a sync PR.")
+    p.add_argument("--pr-number", required=True, type=int)
+    p.add_argument("--pr-branch", required=True)
+    p.add_argument("--default-branch", required=True)
+    p.add_argument("--gh-repo", required=True)
+    p.add_argument("--escalate-to", default="@oncall-client-primary")
+    p.add_argument("--repo-dir", default="", help="Repo checkout dir (needed for conflict path).")
+    p.set_defaults(func=cmd_approve_pr)
 
     # create-sync-prs.
     p = subparsers.add_parser(

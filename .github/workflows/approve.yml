@@ -85,121 +85,11 @@ jobs:
         with:
           token: ${{ steps.token.outputs.token }}
 
-      # ---------------------------------------------------------------
-      # Skip if already handled: check for existing approval or an
-      # existing Repo-Sync-Assigned trailer (conflict already handled).
-      # ---------------------------------------------------------------
-      - name: Check if already handled
-        id: skip_check
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-
-          # Check for existing approval.
-          APPROVALS=$(gh api "/repos/${{ github.repository }}/pulls/${PR_NUMBER}/reviews" \
-            --jq "[.[] | select(.state == \"APPROVED\")] | length")
-          if [ "$APPROVALS" -gt 0 ]; then
-            echo "PR already has an approval. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Check for Repo-Sync-Assigned trailer (conflict already being handled).
-          BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
-          if echo "$BODY" | grep -q '^Repo-Sync-Assigned:'; then
-            echo "PR already has a Repo-Sync-Assigned trailer. Skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
-      # ---------------------------------------------------------------
-      # Guard: each sync PR should have exactly one commit.  If it has
-      # more, it hasn't been rebased yet (e.g., GitHub auto-retargeted
-      # the PR after the base branch was deleted).  Skip and let the
-      # restack workflow handle it.  This also prevents approving a PR
-      # where an agent or human added a conflict resolution commit.
-      # ---------------------------------------------------------------
-      - name: Check commit count
-        if: steps.skip_check.outputs.skip == 'false'
-        id: commit_check
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          COMMIT_COUNT=$(gh pr view "${PR_NUMBER}" --json commits --jq '.commits | length')
-          echo "PR has ${COMMIT_COUNT} commit(s)."
-          if [ "$COMMIT_COUNT" -ne 1 ]; then
-            echo "PR has ${COMMIT_COUNT} commits (expected 1). Needs rebase."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ---------------------------------------------------------------
-      # Check PR mergeability via the GitHub API.  Retry for UNKNOWN
-      # status (GitHub computes mergeability asynchronously).
-      # ---------------------------------------------------------------
-      - name: Check mergeability
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false'
-        id: mergeable
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          MAX_RETRIES=5
-          DELAY=5
-
-          for i in $(seq 1 $MAX_RETRIES); do
-            STATUS=$(gh pr view "${PR_NUMBER}" --json mergeable --jq '.mergeable')
-            echo "Attempt ${i}: mergeable=${STATUS}"
-
-            if [ "$STATUS" = "MERGEABLE" ]; then
-              echo "status=clean" >> "$GITHUB_OUTPUT"
-              exit 0
-            elif [ "$STATUS" = "CONFLICTING" ]; then
-              echo "status=conflicting" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            # UNKNOWN — wait and retry.
-            if [ "$i" -lt "$MAX_RETRIES" ]; then
-              echo "Mergeability unknown, retrying in ${DELAY}s..."
-              sleep "$DELAY"
-            fi
-          done
-
-          # Still unknown after retries — skip this run.  The next PR
-          # event will re-trigger the workflow.
-          echo "Mergeability still unknown after ${MAX_RETRIES} retries. Skipping."
-          echo "status=unknown" >> "$GITHUB_OUTPUT"
-
-      # ---------------------------------------------------------------
-      # Clean path: approve and enable auto-merge (API-only, no git ops).
-      # ---------------------------------------------------------------
-      - name: Approve PR (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          gh pr review "${PR_NUMBER}" --approve \
-            --body "Clean sync — no conflicts." || true
-
-      - name: Enable auto-merge (clean)
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'clean'
-        run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          gh pr merge "${PR_NUMBER}" --auto --squash \
-            || echo "Warning: could not enable auto-merge on PR #${PR_NUMBER}."
-
-      # ---------------------------------------------------------------
-      # Conflict path: checkout, rebase to produce conflict markers,
-      # invoke the agent, assign a reviewer.
-      # ---------------------------------------------------------------
-      - name: Checkout repo
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ steps.token.outputs.token }}
-
+      # All approve logic (skip checks, commit count, mergeability,
+      # approve/conflict handling) is in Python for testability.
+      # The clean path is API-only.  The conflict path needs a full
+      # checkout, which is handled conditionally below.
       - name: Checkout repo-sync tooling
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         uses: actions/checkout@v4
         with:
           repository: warpdotdev/repo-sync
@@ -208,95 +98,29 @@ jobs:
           token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
       - name: Install repo-sync tools
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: pip install -e .repo-sync
 
       - name: Configure git identity
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
         run: |
           git config --global user.name "repo-sync-approver-bot"
           git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
 
-      - name: Label conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
+      # Full fetch for the conflict path.  The Python code's conflict
+      # handler needs full history for rebase --onto.  This is a no-op
+      # cost for the clean path (Python exits before using git).
+      - name: Full fetch for conflict resolution
+        run: git fetch --unshallow origin 2>/dev/null || true
+
+      - name: Run approve
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          gh label create "repo-sync:conflict" --color "D93F0B" \
-            --description "Sync PR has merge conflicts" 2>/dev/null || true
-          gh pr edit "${PR_NUMBER}" --add-label "repo-sync:conflict"
-
-      - name: Rebase and resolve conflicts via agent
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting'
-        id: conflict_resolution
-        run: |
-          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-
-          git fetch origin
-          git checkout "${PR_BRANCH}"
-
-          # Attempt rebase to produce conflict markers for the agent.
-          OLD_BASE=$(git rev-parse HEAD~1)
-          if git rebase --onto "origin/${DEFAULT_BRANCH}" "${OLD_BASE}" "${PR_BRANCH}" 2>/dev/null; then
-            # Rebase succeeded — the PR was conflicting according to GitHub
-            # but the rebase is clean (possibly a transient state).  Push and
-            # let the next approval check handle it.
-            echo "Rebase succeeded unexpectedly. Pushing."
-            git push origin "${PR_BRANCH}" --force-with-lease
-            echo "agent_needed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          CONFLICTING_FILES=$(git diff --name-only --diff-filter=U)
-          echo "Conflicting files: ${CONFLICTING_FILES}"
-
-          AGENT_SUCCEEDED="false"
-          if oz agent run \
-            --skill warpdotdev/repo-sync:conflict-resolution \
-            --context "Conflicting files on PR #${PR_NUMBER}: ${CONFLICTING_FILES}" \
-            2>/dev/null; then
-            echo "Agent resolved conflicts."
-            AGENT_SUCCEEDED="true"
-          else
-            echo "Agent failed to resolve conflicts."
-            git rebase --abort 2>/dev/null || true
-          fi
-
-          echo "agent_needed=true" >> "$GITHUB_OUTPUT"
-          echo "agent_succeeded=${AGENT_SUCCEEDED}" >> "$GITHUB_OUTPUT"
-
-      - name: Push agent resolution
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_succeeded == 'true'
-        run: |
-          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
-          git push origin "${PR_BRANCH}" --force-with-lease
-
-      - name: Assign reviewer after conflict
-        if: steps.skip_check.outputs.skip == 'false' && steps.commit_check.outputs.skip == 'false' && steps.mergeable.outputs.status == 'conflicting' && steps.conflict_resolution.outputs.agent_needed == 'true'
-        run: |
-          # Conflict-resolved PRs always require human sign-off.
-          # The bot does NOT approve — a human must approve before merge.
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-
-          TRAILER_JSON=$(python -m repo_sync.workflows.cli parse-trailer \
-            --pr-number "${PR_NUMBER}" --gh-repo "${{ github.repository }}")
-          SOURCE_REPO=$(echo "$TRAILER_JSON" | jq -r '.repo')
-          SOURCE_SHA=$(echo "$TRAILER_JSON" | jq -r '.sha')
-
-          REVIEWER_JSON=$(python -m repo_sync.workflows.cli determine-reviewer \
-            --source-repo "${SOURCE_REPO}" --source-sha "${SOURCE_SHA}" \
-            --fallback-team "${ESCALATE_TO}")
-          REVIEWER=$(echo "$REVIEWER_JSON" | jq -r '.reviewer')
-
-          gh pr edit "${PR_NUMBER}" --add-reviewer "${REVIEWER}" 2>/dev/null || true
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          CURRENT_BODY=$(gh pr view "${PR_NUMBER}" --json body --jq '.body')
-          UPDATED_BODY=$(printf '%s\n\nRepo-Sync-Assigned: %s@%s' "${CURRENT_BODY}" "${REVIEWER}" "${TIMESTAMP}")
-          gh pr edit "${PR_NUMBER}" --body "${UPDATED_BODY}"
-          echo "Requested review from ${REVIEWER} on PR #${PR_NUMBER}."
+          python -m repo_sync.workflows.cli approve-pr \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-branch "${{ github.event.pull_request.head.ref }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --gh-repo "${{ github.repository }}" \
+            --escalate-to "${ESCALATE_TO}" \
+            --repo-dir .

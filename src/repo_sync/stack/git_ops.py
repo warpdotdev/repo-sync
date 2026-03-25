@@ -70,11 +70,19 @@ class GitOps:
         """Check out a ref."""
         self._run(["checkout", ref])
 
-    def push(self, remote: str, refspec: str, force: bool = False) -> None:
+    def push(
+        self,
+        remote: str,
+        refspec: str,
+        force: bool = False,
+        force_with_lease: bool = False,
+    ) -> None:
         """Push a refspec to a remote."""
         args = ["push", remote, refspec]
-        if force:
-            args.insert(1, "--force")
+        if force_with_lease:
+            args.append("--force-with-lease")
+        elif force:
+            args.append("--force")
         self._run(args)
 
     def commit_message(self, ref: str) -> str:
