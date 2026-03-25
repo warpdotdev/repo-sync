@@ -72,8 +72,8 @@ jobs:
         run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
       - name: Configure git identity
         run: |
-          git config --global user.name "repo-sync-bot"
-          git config --global user.email "repo-sync-bot@users.noreply.github.com"
+          git config --global user.name "warp-repo-sync[bot]"
+          git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
 
       # Derive peer_repo and source_is_private from the two repo names.
       - name: Derive sync context
@@ -206,8 +206,8 @@ jobs:
               # Compute diff between the two clean snapshots using a temp git repo.
               DIFF_REPO="/tmp/diff-repo-${SHORT_SHA}"
               git init -q "${DIFF_REPO}"
-              git -C "${DIFF_REPO}" config user.name "repo-sync-bot"
-              git -C "${DIFF_REPO}" config user.email "repo-sync-bot@users.noreply.github.com"
+              git -C "${DIFF_REPO}" config user.name "warp-repo-sync[bot]"
+              git -C "${DIFF_REPO}" config user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
               cp -a "${PREV_SNAPSHOT_DIR}/." "${DIFF_REPO}/"
               git -C "${DIFF_REPO}" add -A
               git -C "${DIFF_REPO}" commit -q -m "prev" --allow-empty
