@@ -293,8 +293,21 @@ jobs:
               else
                 git push origin "${SYNC_BRANCH}"
               fi
-              gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
+              # Create the PR.  If the base branch was deleted mid-loop
+              # (the base PR merged while we were creating this one), retry
+              # with the default branch.
+              if ! gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>/tmp/pr-create-err.txt; then
+                if grep -q "Base ref must be a branch" /tmp/pr-create-err.txt; then
+                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists (merged mid-loop). Retrying with ${DEFAULT_BRANCH}."
+                  STACK_BASE_BRANCH="${DEFAULT_BRANCH}"
+                  gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                    --base "${DEFAULT_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
+                else
+                  cat /tmp/pr-create-err.txt >&2
+                  exit 1
+                fi
+              fi
               popd > /dev/null
               rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}" "${PATCH_FILE}" "${AGENT_OUT}"
             else
@@ -343,8 +356,19 @@ jobs:
               else
                 git push origin "${SYNC_BRANCH}"
               fi
-              gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
+              # Create the PR (same base-branch fallback as private-to-public).
+              if ! gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>/tmp/pr-create-err.txt; then
+                if grep -q "Base ref must be a branch" /tmp/pr-create-err.txt; then
+                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists (merged mid-loop). Retrying with ${DEFAULT_BRANCH}."
+                  STACK_BASE_BRANCH="${DEFAULT_BRANCH}"
+                  gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
+                    --base "${DEFAULT_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
+                else
+                  cat /tmp/pr-create-err.txt >&2
+                  exit 1
+                fi
+              fi
               popd > /dev/null
             fi
             STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"
