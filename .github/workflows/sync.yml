@@ -151,9 +151,17 @@ jobs:
           PEER_REPO="${{ steps.context.outputs.peer_repo }}"
           SOURCE_IS_PRIVATE="${{ steps.context.outputs.source_is_private }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-          STACK_BASE_BRANCH="${STACK_TOP:-${DEFAULT_BRANCH}}"
-          IS_STACK_BOTTOM="true"
-          [ -n "${STACK_TOP:-}" ] && IS_STACK_BOTTOM="false"
+
+          # Outer retry loop: on transient failures (e.g., base branch
+          # deleted mid-loop because a PR merged), restart from the top.
+          # The idempotency guard skips already-created PRs, so restarts
+          # are safe.  Give up if we fail on the same commit twice.
+          LAST_FAILURE_SHA=""
+          while true; do
+            STACK_BASE_BRANCH="${STACK_TOP:-${DEFAULT_BRANCH}}"
+            IS_STACK_BOTTOM="true"
+            [ -n "${STACK_TOP:-}" ] && IS_STACK_BOTTOM="false"
+            TRANSIENT_FAILURE="false"
 
           while IFS= read -r SOURCE_SHA; do
             [ -z "$SOURCE_SHA" ] && continue
@@ -278,35 +286,25 @@ jobs:
               fi
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               # Push the branch.  If it already exists on the remote (from a
-              # previous interrupted run), verify the content matches before
-              # skipping the push.  Hard-fail if the content differs.
+              # previous interrupted run or retry), force-push.
               REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
-                LOCAL_TREE=$(git rev-parse HEAD^{tree})
-                REMOTE_TREE=$(gh api "/repos/${PEER_REPO}/git/commits/${REMOTE_REF}" --jq '.tree.sha' 2>/dev/null || true)
-                if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
-                  echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
-                else
-                  echo "::warning::Branch ${SYNC_BRANCH} exists on remote with different content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Force-pushing (no PR exists for this branch)."
-                  git push origin "${SYNC_BRANCH}" --force
-                fi
+                echo "::warning::Branch ${SYNC_BRANCH} already exists on remote. Force-pushing."
+                git push origin "${SYNC_BRANCH}" --force
               else
                 git push origin "${SYNC_BRANCH}"
               fi
-              # Create the PR.  If the base branch was deleted mid-loop
-              # (the base PR merged while we were creating this one), retry
-              # with the default branch.
+              # Create the PR.  Transient failure (base branch deleted
+              # mid-loop) triggers a restart of the outer loop.
               if ! gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>/tmp/pr-create-err.txt; then
+                cat /tmp/pr-create-err.txt >&2
                 if grep -q "Base ref must be a branch" /tmp/pr-create-err.txt; then
-                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists (merged mid-loop). Retrying with ${DEFAULT_BRANCH}."
-                  STACK_BASE_BRANCH="${DEFAULT_BRANCH}"
-                  gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                    --base "${DEFAULT_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
-                else
-                  cat /tmp/pr-create-err.txt >&2
-                  exit 1
+                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists. Restarting sync loop."
+                  popd > /dev/null
+                  TRANSIENT_FAILURE="true"; break
                 fi
+                exit 1
               fi
               popd > /dev/null
               rm -rf "${SNAPSHOT_DIR}" "${PREV_SNAPSHOT_DIR}" "${DIFF_REPO}" "${PATCH_FILE}" "${AGENT_OUT}"
@@ -342,34 +340,41 @@ jobs:
               PR_TITLE=$(echo "$DESC_JSON" | jq -r '.title')
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
-              # Push the branch (same remote-exists check as private-to-public).
+              # Push the branch (same logic as private-to-public).
               REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
-                LOCAL_TREE=$(git rev-parse HEAD^{tree})
-                REMOTE_TREE=$(gh api "/repos/${PEER_REPO}/git/commits/${REMOTE_REF}" --jq '.tree.sha' 2>/dev/null || true)
-                if [ "$LOCAL_TREE" = "$REMOTE_TREE" ]; then
-                  echo "Branch ${SYNC_BRANCH} already exists on remote with matching content. Skipping push."
-                else
-                  echo "::warning::Branch ${SYNC_BRANCH} exists on remote with different content (local=${LOCAL_TREE}, remote=${REMOTE_TREE}). Force-pushing (no PR exists for this branch)."
-                  git push origin "${SYNC_BRANCH}" --force
-                fi
+                echo "::warning::Branch ${SYNC_BRANCH} already exists on remote. Force-pushing."
+                git push origin "${SYNC_BRANCH}" --force
               else
                 git push origin "${SYNC_BRANCH}"
               fi
-              # Create the PR (same base-branch fallback as private-to-public).
+              # Create the PR (same transient-failure handling).
               if ! gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
                 --base "${STACK_BASE_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}" 2>/tmp/pr-create-err.txt; then
+                cat /tmp/pr-create-err.txt >&2
                 if grep -q "Base ref must be a branch" /tmp/pr-create-err.txt; then
-                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists (merged mid-loop). Retrying with ${DEFAULT_BRANCH}."
-                  STACK_BASE_BRANCH="${DEFAULT_BRANCH}"
-                  gh pr create --repo "${PEER_REPO}" --head "${SYNC_BRANCH}" \
-                    --base "${DEFAULT_BRANCH}" --title "${PR_TITLE}" --body "${PR_BODY}"
-                else
-                  cat /tmp/pr-create-err.txt >&2
-                  exit 1
+                  echo "::warning::Base branch ${STACK_BASE_BRANCH} no longer exists. Restarting sync loop."
+                  popd > /dev/null
+                  TRANSIENT_FAILURE="true"; break
                 fi
+                exit 1
               fi
               popd > /dev/null
             fi
             STACK_BASE_BRANCH="${SYNC_BRANCH}"; IS_STACK_BOTTOM="false"
           done < /tmp/unsynced_commits.txt
+
+          # Outer retry loop: check if we should restart.
+          if [ "$TRANSIENT_FAILURE" = "false" ]; then
+            break  # All commits processed successfully.
+          fi
+          if [ "$SOURCE_SHA" = "$LAST_FAILURE_SHA" ]; then
+            echo "::error::Stuck on commit ${SOURCE_SHA:0:7} after retry. Giving up."
+            exit 1
+          fi
+          LAST_FAILURE_SHA="$SOURCE_SHA"
+          echo "Sleeping 5s before retry..."
+          sleep 5
+          # Fetch latest state in the peer repo before retrying.
+          git -C peer fetch origin
+          done  # end outer retry loop
