@@ -154,3 +154,92 @@ class GitOps:
         if result.stdout.strip():
             return result.stdout.strip().splitlines()
         return []
+
+    def archive_to_dir(self, ref: str, target_dir: str) -> None:
+        """Extract the tree at a ref into a directory via git archive."""
+        import tarfile
+        import io
+        result = subprocess.run(
+            ["git", "archive", ref],
+            cwd=self.repo_dir,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode, ["git", "archive", ref],
+                result.stdout, result.stderr,
+            )
+        with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
+            tar.extractall(path=target_dir)
+
+    def checkout_force_branch(
+        self, branch: str, start_point: str | None = None
+    ) -> None:
+        """Force-create a branch (git checkout -B)."""
+        args = ["checkout", "-B", branch]
+        if start_point:
+            args.append(start_point)
+        self._run(args)
+
+    def add_all(self) -> None:
+        """Stage all changes (git add -A)."""
+        self._run(["add", "-A"])
+
+    def commit(
+        self,
+        message: str,
+        allow_empty: bool = False,
+        trailers: list[str] | None = None,
+    ) -> None:
+        """Create a commit with the given message."""
+        args = ["commit", "-m", message]
+        for trailer in (trailers or []):
+            args.extend(["-m", trailer])
+        if allow_empty:
+            args.append("--allow-empty")
+        self._run(args)
+
+    def commit_amend_message(self, *messages: str) -> None:
+        """Amend the current commit's message."""
+        args = ["commit", "--amend"]
+        for msg in messages:
+            args.extend(["-m", msg])
+        self._run(args)
+
+    def rm_tracked_files(self) -> None:
+        """Remove all tracked files (git rm -rf --quiet .)."""
+        self._run(["rm", "-rf", "--quiet", "."], check=False)
+
+    def cherry_pick(
+        self, ref: str, allow_empty: bool = False, x: bool = False
+    ) -> CommandResult:
+        """Cherry-pick a commit.  Returns the result (may fail)."""
+        args = ["cherry-pick", ref]
+        if allow_empty:
+            args.append("--allow-empty")
+        if x:
+            args.append("-x")
+        return self._run(args, check=False)
+
+    def cherry_pick_abort(self) -> None:
+        """Abort a cherry-pick in progress."""
+        self._run(["cherry-pick", "--abort"], check=False)
+
+    def remote_add_or_update(self, name: str, url: str) -> None:
+        """Add a remote, or update its URL if it already exists."""
+        result = self._run(["remote", "get-url", name], check=False)
+        if result.success:
+            self._run(["remote", "set-url", name, url])
+        else:
+            self._run(["remote", "add", name, url])
+
+    def log_shas(self, ref: str = "HEAD") -> list[str]:
+        """Return all commit SHAs reachable from ref (newest first)."""
+        result = self._run(["log", "--format=%H", ref])
+        if not result.stdout:
+            return []
+        return result.stdout.splitlines()
+
+    def diff_binary_patch(self, ref_a: str, ref_b: str) -> str:
+        """Generate a binary diff patch between two refs."""
+        return self._run(["diff", "--binary", ref_a, ref_b]).stdout

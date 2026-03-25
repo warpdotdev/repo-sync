@@ -390,6 +390,79 @@ class GhOps:
         except subprocess.CalledProcessError:
             return None
 
+    def get_branch_ref_sha(self, branch: str) -> str | None:
+        """Get the commit SHA a remote branch points to, or None."""
+        try:
+            output = self._run(
+                ["api", f"repos/{self.repo}/git/ref/heads/{branch}",
+                 "--jq", ".object.sha // empty"],
+                check=False,
+            )
+            return output if output else None
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_pr_state_for_branch(self, head_branch: str) -> str | None:
+        """Check if an OPEN or MERGED PR exists for a head branch.
+
+        Returns 'OPEN', 'MERGED', or None.
+        """
+        output = self._run(
+            [
+                "pr", "list", "--repo", self.repo,
+                "--head", head_branch, "--state", "all",
+                "--json", "state",
+                "--jq",
+                '[.[] | select(.state == "OPEN" or .state == "MERGED")] | .[0].state // empty',
+            ],
+            check=False,
+        )
+        return output if output else None
+
+    def create_pr_simple(
+        self, head: str, base: str, title: str, body: str
+    ) -> str:
+        """Create a PR and return its URL.  Raises on failure."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False
+        ) as f:
+            f.write(body)
+            body_file = f.name
+        try:
+            return self._run(
+                [
+                    "pr", "create",
+                    "--repo", self.repo,
+                    "--head", head,
+                    "--base", base,
+                    "--title", title,
+                    "--body-file", body_file,
+                ]
+            )
+        finally:
+            os.unlink(body_file)
+
+    def add_label(self, pr_number: int, label: str) -> None:
+        """Add a label to a PR.  Creates the label if it doesn't exist."""
+        self._run(
+            ["label", "create", label, "--color", "0E8A16",
+             "--description", "Sync PR needs rebasing before approval",
+             "--repo", self.repo],
+            check=False,
+        )
+        self._run(
+            ["pr", "edit", str(pr_number), "--repo", self.repo,
+             "--add-label", label],
+        )
+
+    def remove_label(self, pr_number: int, label: str) -> None:
+        """Remove a label from a PR.  Ignores errors if the label isn't present."""
+        self._run(
+            ["pr", "edit", str(pr_number), "--repo", self.repo,
+             "--remove-label", label],
+            check=False,
+        )
+
     def get_commit_author_login(self, sha: str) -> str | None:
         """Get the GitHub login of a commit's author."""
         try:
