@@ -287,7 +287,7 @@ jobs:
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               # Push the branch.  If it already exists on the remote (from a
               # previous interrupted run or retry), force-push.
-              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
+              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha // empty' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
                 echo "::warning::Branch ${SYNC_BRANCH} already exists on remote. Force-pushing."
                 git push origin "${SYNC_BRANCH}" --force
@@ -341,7 +341,7 @@ jobs:
               PR_BODY=$(echo "$DESC_JSON" | jq -r '.body')
               PR_BODY=$(printf '%s\n\nRepo-Sync-Origin: %s@%s' "${PR_BODY}" "${SOURCE_REPO}" "${SOURCE_SHA}")
               # Push the branch (same logic as private-to-public).
-              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha' 2>/dev/null || true)
+              REMOTE_REF=$(gh api "/repos/${PEER_REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha // empty' 2>/dev/null || true)
               if [ -n "$REMOTE_REF" ]; then
                 echo "::warning::Branch ${SYNC_BRANCH} already exists on remote. Force-pushing."
                 git push origin "${SYNC_BRANCH}" --force
