@@ -62,7 +62,7 @@ def _write_github_output(key: str, value: str) -> None:
             f.write(f"{key}={value}\n")
 
 
-def cmd_read_watermark
+def cmd_read_watermark(args: argparse.Namespace) -> None:
     """Read the watermark from the peer repo via the GitHub API.
 
     The watermark tag lives in the peer repo (the target of sync), not the
