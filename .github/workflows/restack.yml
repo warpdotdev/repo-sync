@@ -124,95 +124,17 @@ jobs:
           git config --global user.name "warp-repo-sync[bot]"
           git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
 
-      # Derive peer_repo and source_is_private from the two repo names.
-      - name: Derive sync context
-        id: context
-        run: |
-          if [ "${{ github.repository }}" = "${PRIVATE_REPO}" ]; then
-            echo "source_is_private=true" >> "$GITHUB_OUTPUT"
-            echo "peer_repo=${PUBLIC_REPO}" >> "$GITHUB_OUTPUT"
-          else
-            echo "source_is_private=false" >> "$GITHUB_OUTPUT"
-            echo "peer_repo=${PRIVATE_REPO}" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Identify the PR context FIRST so we can use the stuck PR's head
-      # branch for direction detection (avoids the fallback inversion bug).
-      - name: Identify PR context
-        id: merged_pr
-        run: |
-          # Stuck-stack recovery or needs-restack: the PR is open and needs
-          # rebasing, NOT a merged PR.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event.action }}" = "labeled" ]; then
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              STUCK_PR="${{ github.event.inputs.pr_number || '' }}"
-            else
-              STUCK_PR="${{ github.event.pull_request.number }}"
-            fi
-            if [ -z "$STUCK_PR" ]; then
-              echo "::error::No PR number provided."
-              exit 1
-            fi
-            echo "mode=stuck_recovery" >> "$GITHUB_OUTPUT"
-            echo "stuck_pr=${STUCK_PR}" >> "$GITHUB_OUTPUT"
-            STUCK_HEAD=$(gh pr view "$STUCK_PR" --json headRefName --jq '.headRefName')
-            STUCK_BASE=$(gh pr view "$STUCK_PR" --json baseRefName --jq '.baseRefName')
-            echo "stuck_head_branch=${STUCK_HEAD}" >> "$GITHUB_OUTPUT"
-            echo "stuck_base_branch=${STUCK_BASE}" >> "$GITHUB_OUTPUT"
-            echo "Needs-restack PR #${STUCK_PR}: head=${STUCK_HEAD}, base=${STUCK_BASE}."
-            exit 0
-          fi
-
-          # Normal path: a sync PR was just merged.
-          MERGED_PR_NUMBER="${{ github.event.pull_request.number }}"
-          echo "mode=normal" >> "$GITHUB_OUTPUT"
-          echo "pr_number=${MERGED_PR_NUMBER}" >> "$GITHUB_OUTPUT"
-
-          # Get the merge commit SHA.
-          MERGE_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid')
-          echo "merge_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
-
-          # Get the head branch and its tip commit SHA.  We need the tip SHA
-          # because the branch may have been auto-deleted after merge, making
-          # origin/<branch> unresolvable during rebase --onto.
-          HEAD_BRANCH=$(gh pr view "$MERGED_PR_NUMBER" --json headRefName --jq '.headRefName')
-          HEAD_SHA=$(gh pr view "$MERGED_PR_NUMBER" --json headRefOid --jq '.headRefOid')
-          echo "merged_head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "merged_head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "Merged PR #${MERGED_PR_NUMBER}: merge SHA ${MERGE_SHA}, head ${HEAD_BRANCH} (${HEAD_SHA})."
-
-      # Direction detection AFTER PR identification, so we can use the stuck
-      # PR's head branch for direction detection instead of the fallback.
-      - name: Set direction variables
-        id: direction
-        run: |
-          # Use the stuck PR's head branch (if available) or the merged PR's head branch.
-          if [ "${{ steps.merged_pr.outputs.mode }}" = "stuck_recovery" ]; then
-            HEAD_BRANCH="${{ steps.merged_pr.outputs.stuck_head_branch }}"
-          else
-            HEAD_BRANCH="${{ github.event.pull_request.head.ref || '' }}"
-          fi
-          PRIVATE_FLAG=""
-          [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
-          python -m repo_sync.workflows.cli detect-direction \
-            --head-branch "${HEAD_BRANCH}" \
-            $PRIVATE_FLAG
-          # Watermark lives in THIS repo (the target).
-          echo "watermark_repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
-
-      # All restack logic (watermark update, find next PR, rebase, push,
-      # label management) is in Python for testability.
+      # All restack logic (context derivation, direction detection, watermark
+      # update, find next PR, rebase, push, label management) is in Python.
+      # The event payload provides all needed GitHub context.
       - name: Run restack
         run: |
-          MODE="${{ steps.merged_pr.outputs.mode }}"
           python -m repo_sync.workflows.cli restack-pr \
-            --mode "${MODE}" \
-            --direction "${{ steps.direction.outputs.direction }}" \
-            --default-branch "${{ github.event.repository.default_branch }}" \
-            --watermark-repo "${{ steps.direction.outputs.watermark_repo }}" \
-            --repo-dir . \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
             --gh-repo "${{ github.repository }}" \
-            --merge-sha "${{ steps.merged_pr.outputs.merge_sha }}" \
-            --merged-head-branch "${{ steps.merged_pr.outputs.merged_head_branch }}" \
-            --stuck-pr-number "${{ steps.merged_pr.outputs.stuck_pr || '0' }}" \
-            --stuck-head-branch "${{ steps.merged_pr.outputs.stuck_head_branch }}"
+            --public-repo "${PUBLIC_REPO}" \
+            --private-repo "${PRIVATE_REPO}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --repo-dir .

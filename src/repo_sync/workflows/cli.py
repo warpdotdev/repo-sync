@@ -45,7 +45,7 @@ from repo_sync.workflows.create_sync_prs import (
     PermanentSyncError,
     create_sync_prs,
 )
-from repo_sync.workflows.restack_logic import RestackError, run_restack
+from repo_sync.workflows.restack_logic import RestackError, run_restack_from_event
 from repo_sync.workflows.sync import (
     SyncConfig,
     build_public_to_private_description,
@@ -202,22 +202,21 @@ def cmd_parse_trailer(args: argparse.Namespace) -> None:
 
 
 def cmd_restack_pr(args: argparse.Namespace) -> None:
-    """Run the restack workflow logic."""
+    """Run the restack workflow logic from event context."""
     git = GitOps(args.repo_dir)
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
 
     try:
-        run_restack(
+        run_restack_from_event(
             git=git,
             gh=gh,
-            mode=args.mode,
-            direction=args.direction,
+            event_path=args.event_path,
+            event_name=args.event_name,
+            event_action=args.event_action,
+            repository=args.gh_repo,
+            public_repo=args.public_repo,
+            private_repo=args.private_repo,
             default_branch=args.default_branch,
-            watermark_repo=args.watermark_repo,
-            merge_sha=args.merge_sha or None,
-            merged_head_branch=args.merged_head_branch or None,
-            stuck_pr_number=args.stuck_pr_number or None,
-            stuck_head_branch=args.stuck_head_branch or None,
         )
     except RestackError as e:
         logging.error("%s", e)
@@ -403,18 +402,14 @@ def main() -> None:
 
     # restack-pr.
     p = subparsers.add_parser("restack-pr", help="Restack the next sync PR.")
-    p.add_argument("--mode", required=True, choices=["normal", "stuck_recovery"])
-    p.add_argument("--direction", required=True)
+    p.add_argument("--event-path", required=True, help="Path to GitHub event payload JSON.")
+    p.add_argument("--event-name", required=True, help="GitHub event name (e.g. pull_request, workflow_dispatch).")
+    p.add_argument("--event-action", default="", help="GitHub event action (e.g. closed, labeled).")
+    p.add_argument("--gh-repo", required=True, help="Current repository (owner/name).")
+    p.add_argument("--public-repo", required=True)
+    p.add_argument("--private-repo", required=True)
     p.add_argument("--default-branch", required=True)
-    p.add_argument("--watermark-repo", required=True)
     p.add_argument("--repo-dir", required=True)
-    p.add_argument("--gh-repo", required=True)
-    # Post-merge mode fields.
-    p.add_argument("--merge-sha", default="")
-    p.add_argument("--merged-head-branch", default="")
-    # Stuck-recovery mode fields.
-    p.add_argument("--stuck-pr-number", type=int, default=0)
-    p.add_argument("--stuck-head-branch", default="")
     p.set_defaults(func=cmd_restack_pr)
 
     # approve-pr.

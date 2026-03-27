@@ -75,44 +75,37 @@ jobs:
           git config --global user.name "warp-repo-sync[bot]"
           git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
 
-      # Derive peer_repo and source_is_private from the two repo names.
+      # Derive sync context: peer repo and direction.
+      # These are simple derivations from the repo names that the Python
+      # CLI commands below need as arguments.
       - name: Derive sync context
         id: context
         run: |
           if [ "${{ github.repository }}" = "${PRIVATE_REPO}" ]; then
             echo "source_is_private=true" >> "$GITHUB_OUTPUT"
             echo "peer_repo=${PUBLIC_REPO}" >> "$GITHUB_OUTPUT"
+            echo "direction=private-to-public" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=repo-sync/private-to-public" >> "$GITHUB_OUTPUT"
           else
             echo "source_is_private=false" >> "$GITHUB_OUTPUT"
             echo "peer_repo=${PRIVATE_REPO}" >> "$GITHUB_OUTPUT"
+            echo "direction=public-to-private" >> "$GITHUB_OUTPUT"
+            echo "branch_prefix=repo-sync/public-to-private" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Detect direction
-        id: direction
-        run: |
-          PRIVATE_FLAG=""
-          [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
-          python -m repo_sync.workflows.cli detect-direction $PRIVATE_FLAG
-
-      # No early-exit loop check here.  enumerate_unsynced_commits already
-      # filters out sync-originated commits per-commit.  An early exit on
-      # the trigger SHA would incorrectly skip unsynced commits when a
-      # sync-originated commit replaces a normal commit in the concurrency
-      # group's pending slot.
 
       - name: Read watermark
         id: watermark
         run: |
           python -m repo_sync.workflows.cli read-watermark \
             --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.direction.outputs.direction }}"
+            --direction "${{ steps.context.outputs.direction }}"
 
       - name: List unsynced commits
         id: unsynced
         run: |
           python -m repo_sync.workflows.cli list-unsynced \
             --repo-dir . --gh-repo "${{ github.repository }}" \
-            --direction "${{ steps.direction.outputs.direction }}" \
+            --direction "${{ steps.context.outputs.direction }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
             --watermark-sha "${{ steps.watermark.outputs.last_synced_sha }}"
 
@@ -126,22 +119,15 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
-      - name: Find existing stack top
-        if: steps.unsynced.outputs.count != '0'
-        id: stack_top
-        run: |
-          python -m repo_sync.workflows.cli find-stack-top \
-            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.direction.outputs.direction }}"
-
-      # Per-commit sync PR creation.  All orchestration logic (retry loop,
-      # idempotency, snapshot diffing, cherry-pick, push, PR creation) lives
-      # in Python for testability.
+      # Find stack top + create sync PRs.
       - name: Create sync PRs
         if: steps.unsynced.outputs.count != '0'
         env:
           SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
         run: |
+          python -m repo_sync.workflows.cli find-stack-top \
+            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
+            --direction "${{ steps.context.outputs.direction }}"
           PRIVATE_FLAG=""
           [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
           python -m repo_sync.workflows.cli create-sync-prs \
@@ -149,8 +135,8 @@ jobs:
             --peer-repo-dir peer \
             --source-repo "${{ github.repository }}" \
             --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.direction.outputs.direction }}" \
-            --branch-prefix "${{ steps.direction.outputs.branch_prefix }}" \
+            --direction "${{ steps.context.outputs.direction }}" \
+            --branch-prefix "${{ steps.context.outputs.branch_prefix }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
             --stack-top "${{ steps.stack_top.outputs.stack_top }}" \
             --commits-file /tmp/unsynced_commits.txt \

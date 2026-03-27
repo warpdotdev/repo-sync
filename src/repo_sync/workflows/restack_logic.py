@@ -18,6 +18,7 @@ import subprocess
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.trailers import parse_origin
+from repo_sync.workflows.restack_workflow import determine_direction
 
 logger = logging.getLogger(__name__)
 
@@ -246,3 +247,92 @@ def run_restack(
 
     # Step 3: Rebase the PR.
     rebase_pr(git, gh, next_pr, next_head, default_branch)
+
+
+def run_restack_from_event(
+    git: GitOps,
+    gh: GhOps,
+    event_path: str,
+    event_name: str,
+    event_action: str,
+    repository: str,
+    public_repo: str,
+    private_repo: str,
+    default_branch: str,
+) -> None:
+    """Run the restack workflow from a GitHub Actions event context.
+
+    Derives mode, direction, PR context, and watermark repo from the event
+    payload, then delegates to run_restack().
+    """
+    # Read the event payload.
+    with open(event_path) as f:
+        event = json.load(f)
+
+    # Derive sync context.
+    source_is_private = repository == private_repo
+
+    # Determine mode and PR context.
+    if event_name == "workflow_dispatch" or event_action == "labeled":
+        # Stuck-recovery or needs-restack mode.
+        if event_name == "workflow_dispatch":
+            pr_number = int(event.get("inputs", {}).get("pr_number", 0))
+        else:
+            pr_number = event.get("pull_request", {}).get("number", 0)
+
+        if not pr_number:
+            raise RestackError("No PR number provided.")
+
+        # Look up the PR's head branch.
+        head_branch = gh._run([
+            "pr", "view", str(pr_number), "--repo", gh.repo,
+            "--json", "headRefName", "--jq", ".headRefName",
+        ])
+
+        # Detect direction from the head branch.
+        direction = determine_direction(
+            merged_head_branch=head_branch,
+            source_is_private=source_is_private,
+        )
+
+        run_restack(
+            git=git, gh=gh,
+            mode="stuck_recovery",
+            direction=direction,
+            default_branch=default_branch,
+            watermark_repo=repository,
+            stuck_pr_number=pr_number,
+            stuck_head_branch=head_branch,
+        )
+    else:
+        # Normal post-merge mode.
+        pr = event.get("pull_request", {})
+        pr_number = pr.get("number", 0)
+        head_branch = pr.get("head", {}).get("ref", "")
+
+        # Detect direction from the merged PR's head branch.
+        direction = determine_direction(
+            merged_head_branch=head_branch,
+            source_is_private=source_is_private,
+        )
+
+        # Get merge commit SHA via API (not in the event payload for
+        # workflow_call triggers).
+        merge_sha = gh._run([
+            "pr", "view", str(pr_number), "--repo", gh.repo,
+            "--json", "mergeCommit", "--jq", ".mergeCommit.oid",
+        ])
+        merged_head_branch_name = gh._run([
+            "pr", "view", str(pr_number), "--repo", gh.repo,
+            "--json", "headRefName", "--jq", ".headRefName",
+        ])
+
+        run_restack(
+            git=git, gh=gh,
+            mode="normal",
+            direction=direction,
+            default_branch=default_branch,
+            watermark_repo=repository,
+            merge_sha=merge_sha,
+            merged_head_branch=merged_head_branch_name,
+        )
