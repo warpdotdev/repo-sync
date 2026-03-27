@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from datetime import datetime, timezone
@@ -219,7 +220,7 @@ def cmd_restack_pr(args: argparse.Namespace) -> None:
             stuck_head_branch=args.stuck_head_branch or None,
         )
     except RestackError as e:
-        print(f"::error::{e}")
+        logging.error("%s", e)
         sys.exit(1)
 
 
@@ -270,11 +271,11 @@ def cmd_create_sync_prs(args: argparse.Namespace) -> None:
             repo_sync_dir=args.repo_sync_dir,
         )
     except PermanentSyncError as e:
-        print(f"::error::{e}")
+        logging.error("%s", e)
         sys.exit(1)
 
 
-def cmd_escalation_check(args: argparse.Namespace) -> None:
+def cmd_escalation_check
     """Run escalation checks on all open sync PRs."""
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
     escalate_after = parse_duration(args.escalate_after)
@@ -314,8 +315,32 @@ def cmd_escalation_check(args: argparse.Namespace) -> None:
     print()
 
 
+class _GitHubActionsFormatter(logging.Formatter):
+    """Log formatter that emits GitHub Actions annotations for warnings/errors."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        if record.levelno >= logging.ERROR:
+            return f"::error::{msg}"
+        if record.levelno >= logging.WARNING:
+            return f"::warning::{msg}"
+        return msg
+
+
+def _configure_logging() -> None:
+    """Set up logging with GitHub Actions annotations when running in CI."""
+    handler = logging.StreamHandler(sys.stdout)
+    if os.environ.get("GITHUB_ACTIONS"):
+        handler.setFormatter(_GitHubActionsFormatter())
+    else:
+        handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
 def main() -> None:
     """Main CLI entrypoint."""
+    _configure_logging()
+
     parser = argparse.ArgumentParser(
         prog="repo-sync-workflow",
         description="CLI entrypoints for repo-sync workflow orchestration.",
