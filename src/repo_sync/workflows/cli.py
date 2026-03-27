@@ -275,7 +275,7 @@ def cmd_create_sync_prs(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def cmd_escalation_check
+def cmd_escalation_check(args: argparse.Namespace) -> None:
     """Run escalation checks on all open sync PRs."""
     gh = GhOps(args.gh_repo, token=os.environ.get("GH_TOKEN"))
     escalate_after = parse_duration(args.escalate_after)
