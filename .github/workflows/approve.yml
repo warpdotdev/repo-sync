@@ -46,26 +46,23 @@ on:
         description: "GitHub App private key (approver bot)."
         required: true
 
+# Serialize approval runs per PR.  Multiple events (opened, synchronize,
+# edited) can fire near-simultaneously; without this, parallel runs would
+# all approve before any completes.  Use cancel-in-progress: false so a
+# running approval completes fully (avoiding partial state like approved
+# but auto-merge not enabled); the queued run will skip via skip_check.
+concurrency:
+  group: repo-sync-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   approve:
     runs-on: ubuntu-latest
     # Only run for repo-sync/ branches targeting the default branch.
     if: startsWith(github.event.pull_request.head.ref, 'repo-sync/')
-    # Serialize approval runs per PR.  Multiple events (opened, synchronize,
-    # edited) can fire near-simultaneously; without this, parallel runs would
-    # all approve before any completes.  Use cancel-in-progress: false so a
-    # running approval completes fully (avoiding partial state like approved
-    # but auto-merge not enabled); the queued run will skip via skip_check.
-    concurrency:
-      group: repo-sync-approve-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
-    env:
-      PUBLIC_REPO: ${{ inputs.public_repo }}
-      PRIVATE_REPO: ${{ inputs.private_repo }}
-      ESCALATE_TO: ${{ inputs.escalate_to }}
     steps:
       - name: Generate installation token
         id: token
@@ -85,10 +82,12 @@ jobs:
         with:
           token: ${{ steps.token.outputs.token }}
 
-      # All approve logic (skip checks, commit count, mergeability,
-      # approve/conflict handling) is in Python for testability.
-      # The clean path is API-only.  The conflict path needs a full
-      # checkout, which is handled conditionally below.
+      # Full fetch for the conflict path.  The Python code's conflict
+      # handler needs full history for rebase --onto.  This is a no-op
+      # cost for the clean path (Python exits before using git).
+      - name: Full fetch for conflict resolution
+        run: git fetch --unshallow origin 2>/dev/null || true
+
       - name: Checkout repo-sync tooling
         uses: actions/checkout@v4
         with:
@@ -99,21 +98,11 @@ jobs:
 
       - name: Set up Python
         uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
 
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
-
-      - name: Configure git identity
-        run: |
-          git config --global user.name "repo-sync-approver-bot"
-          git config --global user.email "repo-sync-approver-bot@users.noreply.github.com"
-
-      # Full fetch for the conflict path.  The Python code's conflict
-      # handler needs full history for rebase --onto.  This is a no-op
-      # cost for the clean path (Python exits before using git).
-      - name: Full fetch for conflict resolution
-        run: git fetch --unshallow origin 2>/dev/null || true
 
       - name: Run approve
         run: |
@@ -122,5 +111,5 @@ jobs:
             --pr-branch "${{ github.event.pull_request.head.ref }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
             --gh-repo "${{ github.repository }}" \
-            --escalate-to "${ESCALATE_TO}" \
+            --escalate-to "${{ inputs.escalate_to }}" \
             --repo-dir .
