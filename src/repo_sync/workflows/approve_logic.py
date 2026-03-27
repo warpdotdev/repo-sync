@@ -24,6 +24,12 @@ from repo_sync.workflows.sync import determine_sync_reviewer
 
 logger = logging.getLogger(__name__)
 
+# Git identity for conflict resolution commits.
+# TODO(vorporeal): Consider changing this to the Oz agent identity so it's
+# clear that the agent (not the approver bot) produced the resolution commit.
+_CONFLICT_RESOLUTION_GIT_NAME = "repo-sync-approver-bot"
+_CONFLICT_RESOLUTION_GIT_EMAIL = "repo-sync-approver-bot@users.noreply.github.com"
+
 
 class ApproveSkipped(Exception):
     """Raised when the approve workflow should skip this PR."""
@@ -140,6 +146,10 @@ def handle_conflict(
         "pr", "edit", str(pr_number), "--repo", gh.repo,
         "--add-label", "repo-sync:conflict",
     ])
+
+    # Configure git identity for any commits produced during conflict resolution.
+    git._run(["config", "user.name", _CONFLICT_RESOLUTION_GIT_NAME])
+    git._run(["config", "user.email", _CONFLICT_RESOLUTION_GIT_EMAIL])
 
     git.fetch("origin")
     git.checkout(pr_branch)
