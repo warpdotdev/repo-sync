@@ -21,8 +21,14 @@ import time
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
+from repo_sync.stack.trailers import SyncOrigin
 from repo_sync.workflows.descriptions import private_to_public_fallback
-from repo_sync.workflows.sync import build_public_to_private_description
+from repo_sync.workflows.sync import (
+    build_public_to_private_description,
+    enumerate_unsynced_commits,
+    find_existing_stack_top,
+    read_watermark_from_peer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -505,3 +511,66 @@ def create_sync_prs(
         time.sleep(5)
         # Fetch latest state in the peer repo before retrying.
         peer_git.fetch("origin")
+
+
+def run_sync(
+    source_repo_dir: str,
+    peer_repo_dir: str,
+    source_repo: str,
+    public_repo: str,
+    private_repo: str,
+    default_branch: str,
+    slack_webhook_url: str = "",
+    repo_sync_dir: str = "",
+) -> None:
+    """Run the full sync workflow: watermark, commit enumeration, PR creation.
+
+    Derives direction, peer repo, and source_is_private from the repo names.
+    """
+    source_is_private = source_repo == private_repo
+    peer_repo = public_repo if source_is_private else private_repo
+    direction = "private-to-public" if source_is_private else "public-to-private"
+    branch_prefix = f"repo-sync/{direction}"
+
+    source_git = GitOps(source_repo_dir)
+    source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
+    peer_git = GitOps(peer_repo_dir)
+    peer_gh = GhOps(peer_repo, token=os.environ.get("GH_TOKEN"))
+
+    # Read watermark.
+    watermark = read_watermark_from_peer(peer_gh, direction)
+    if watermark is None:
+        raise PermanentSyncError(
+            f"No watermark for direction '{direction}' in {peer_repo}."
+        )
+    logger.info("Watermark: %s@%s", watermark.repo, watermark.sha)
+
+    # Enumerate unsynced commits.
+    unsynced = enumerate_unsynced_commits(
+        source_git, source_gh, direction, default_branch,
+        SyncOrigin(repo=watermark.repo, sha=watermark.sha),
+    )
+    if not unsynced:
+        logger.info("No unsynced commits to process.")
+        return
+    logger.info("%d unsynced commit(s) to process.", len(unsynced))
+
+    # Find existing stack top.
+    stack_top = find_existing_stack_top(peer_gh, direction)
+
+    # Create sync PRs.
+    create_sync_prs(
+        source_git=source_git,
+        peer_git=peer_git,
+        peer_gh=peer_gh,
+        unsynced_commits=unsynced,
+        source_repo=source_repo,
+        peer_repo=peer_repo,
+        direction=direction,
+        branch_prefix=branch_prefix,
+        source_is_private=source_is_private,
+        default_branch=default_branch,
+        stack_top=stack_top,
+        slack_webhook_url=slack_webhook_url,
+        repo_sync_dir=repo_sync_dir,
+    )

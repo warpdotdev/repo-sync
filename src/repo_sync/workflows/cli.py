@@ -44,6 +44,7 @@ from repo_sync.workflows.approve_logic import run_approve
 from repo_sync.workflows.create_sync_prs import (
     PermanentSyncError,
     create_sync_prs,
+    run_sync,
 )
 from repo_sync.workflows.restack_logic import RestackError, run_restack_from_event
 from repo_sync.workflows.sync import (
@@ -239,33 +240,16 @@ def cmd_approve_pr(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_create_sync_prs(args: argparse.Namespace) -> None:
-    """Create sync PRs for unsynced commits."""
-    source_git = GitOps(args.source_repo_dir)
-    peer_git = GitOps(args.peer_repo_dir)
-    peer_gh = GhOps(args.peer_repo, token=os.environ.get("GH_TOKEN"))
-
-    # Read unsynced commits from file.
-    with open(args.commits_file) as f:
-        unsynced_commits = [line.strip() for line in f if line.strip()]
-
-    if not unsynced_commits:
-        print("No unsynced commits to process.")
-        return
-
+def cmd_run_sync(args: argparse.Namespace) -> None:
+    """Run the full sync workflow: watermark, enumerate, create PRs."""
     try:
-        create_sync_prs(
-            source_git=source_git,
-            peer_git=peer_git,
-            peer_gh=peer_gh,
-            unsynced_commits=unsynced_commits,
+        run_sync(
+            source_repo_dir=args.source_repo_dir,
+            peer_repo_dir=args.peer_repo_dir,
             source_repo=args.source_repo,
-            peer_repo=args.peer_repo,
-            direction=args.direction,
-            branch_prefix=args.branch_prefix,
-            source_is_private=args.source_is_private,
+            public_repo=args.public_repo,
+            private_repo=args.private_repo,
             default_branch=args.default_branch,
-            stack_top=args.stack_top or None,
             slack_webhook_url=args.slack_webhook_url,
             repo_sync_dir=args.repo_sync_dir,
         )
@@ -422,23 +406,19 @@ def main() -> None:
     p.add_argument("--repo-dir", default="", help="Repo checkout dir (needed for conflict path).")
     p.set_defaults(func=cmd_approve_pr)
 
-    # create-sync-prs.
+    # run-sync.
     p = subparsers.add_parser(
-        "create-sync-prs", help="Create sync PRs for unsynced commits."
+        "run-sync", help="Run the full sync workflow."
     )
     p.add_argument("--source-repo-dir", required=True, help="Path to the source repo checkout.")
     p.add_argument("--peer-repo-dir", required=True, help="Path to the peer repo checkout.")
     p.add_argument("--source-repo", required=True, help="Source repo (owner/name).")
-    p.add_argument("--peer-repo", required=True, help="Peer repo (owner/name).")
-    p.add_argument("--direction", required=True)
-    p.add_argument("--branch-prefix", required=True)
-    p.add_argument("--source-is-private", action="store_true", default=False)
+    p.add_argument("--public-repo", required=True)
+    p.add_argument("--private-repo", required=True)
     p.add_argument("--default-branch", required=True)
-    p.add_argument("--stack-top", default="")
-    p.add_argument("--commits-file", required=True, help="Path to file with unsynced commit SHAs.")
     p.add_argument("--slack-webhook-url", default="")
     p.add_argument("--repo-sync-dir", default="", help="Path to the repo-sync checkout.")
-    p.set_defaults(func=cmd_create_sync_prs)
+    p.set_defaults(func=cmd_run_sync)
 
     # escalation-check.
     p = subparsers.add_parser(

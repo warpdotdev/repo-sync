@@ -75,71 +75,29 @@ jobs:
           git config --global user.name "warp-repo-sync[bot]"
           git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
 
-      # Derive sync context: peer repo and direction.
-      # These are simple derivations from the repo names that the Python
-      # CLI commands below need as arguments.
-      - name: Derive sync context
-        id: context
-        run: |
-          if [ "${{ github.repository }}" = "${PRIVATE_REPO}" ]; then
-            echo "source_is_private=true" >> "$GITHUB_OUTPUT"
-            echo "peer_repo=${PUBLIC_REPO}" >> "$GITHUB_OUTPUT"
-            echo "direction=private-to-public" >> "$GITHUB_OUTPUT"
-            echo "branch_prefix=repo-sync/private-to-public" >> "$GITHUB_OUTPUT"
-          else
-            echo "source_is_private=false" >> "$GITHUB_OUTPUT"
-            echo "peer_repo=${PRIVATE_REPO}" >> "$GITHUB_OUTPUT"
-            echo "direction=public-to-private" >> "$GITHUB_OUTPUT"
-            echo "branch_prefix=repo-sync/public-to-private" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Read watermark
-        id: watermark
-        run: |
-          python -m repo_sync.workflows.cli read-watermark \
-            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.context.outputs.direction }}"
-
-      - name: List unsynced commits
-        id: unsynced
-        run: |
-          python -m repo_sync.workflows.cli list-unsynced \
-            --repo-dir . --gh-repo "${{ github.repository }}" \
-            --direction "${{ steps.context.outputs.direction }}" \
-            --default-branch "${{ github.event.repository.default_branch }}" \
-            --watermark-sha "${{ steps.watermark.outputs.last_synced_sha }}"
-
+      # Checkout the peer repo (always, to avoid conditional complexity).
+      # The Python code exits early if there are no unsynced commits.
       - name: Checkout peer repo
-        if: steps.unsynced.outputs.count != '0'
         uses: actions/checkout@v4
         with:
-          repository: ${{ steps.context.outputs.peer_repo }}
+          repository: ${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
           ref: ${{ github.event.repository.default_branch }}
           path: peer
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
 
-      # Find stack top + create sync PRs.
-      - name: Create sync PRs
-        if: steps.unsynced.outputs.count != '0'
+      # All sync logic (context derivation, watermark, commit enumeration,
+      # stack top detection, PR creation) is in Python.
+      - name: Run sync
         env:
           SLACK_WEBHOOK_URL: ${{ inputs.slack_webhook_url }}
         run: |
-          python -m repo_sync.workflows.cli find-stack-top \
-            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.context.outputs.direction }}"
-          PRIVATE_FLAG=""
-          [ "${{ steps.context.outputs.source_is_private }}" = "true" ] && PRIVATE_FLAG="--source-is-private"
-          python -m repo_sync.workflows.cli create-sync-prs \
+          python -m repo_sync.workflows.cli run-sync \
             --source-repo-dir . \
             --peer-repo-dir peer \
             --source-repo "${{ github.repository }}" \
-            --peer-repo "${{ steps.context.outputs.peer_repo }}" \
-            --direction "${{ steps.context.outputs.direction }}" \
-            --branch-prefix "${{ steps.context.outputs.branch_prefix }}" \
+            --public-repo "${PUBLIC_REPO}" \
+            --private-repo "${PRIVATE_REPO}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
-            --stack-top "${{ steps.stack_top.outputs.stack_top }}" \
-            --commits-file /tmp/unsynced_commits.txt \
             --slack-webhook-url "${SLACK_WEBHOOK_URL}" \
-            --repo-sync-dir .repo-sync \
-            $PRIVATE_FLAG
+            --repo-sync-dir .repo-sync
