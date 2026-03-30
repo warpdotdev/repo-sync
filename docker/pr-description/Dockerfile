@@ -5,48 +5,46 @@
 # public diff, but cannot access the private repo's git history, commit
 # messages, private files, or PR metadata.
 #
-# Expected read-only volume mounts, provided by the workflow at runtime.
-#   /workspace        - The clean snapshot of the codebase (stripped of all
-#                       private code).  This is the agent's working directory.
-#   /mnt/diff         - Directory containing public.diff, the unified diff
-#                       of changes being synced.
-#   /mnt/skill        - Directory containing SKILL.md, the PR description
-#                       skill file.
+# Expected read-only volume mounts, provided by the workflow at runtime:
+#   /mnt/snapshot     - The clean snapshot of the codebase (stripped of all
+#                       private code).  The agent uses this as its working
+#                       directory for codebase context.
+#   /mnt/diff/public.diff
+#                     - The unified diff of changes being synced.
 #
-# The container does NOT have access to the following.
+# The container does NOT have access to the following:
 #   - The private repo's .git directory or git history.
 #   - Private files, commit messages, or PR metadata.
-#   - The git CLI (not included in the base image, as defense-in-depth).
+#   - The git CLI (not installed, as defense-in-depth).
 #
 # The isolation boundary is filesystem-only: the agent can reach the
-# network (required for the oz CLI to call the LLM API), but has no
-# access to private repo data on disk.
+# network (required for the LLM API), but has no access to private repo
+# data on disk.
 #
-# Example invocation from the workflow.
+# The image is built locally by the sync workflow (not pushed to a
+# registry).  It is invoked by _run_pr_description_agent() in
+# create_sync_prs.py, which passes the volume mounts and CLI flags:
+#
 #   docker run --rm \
-#     --read-only \
-#     --tmpfs /tmp \
-#     --tmpfs /home/agent \
-#     -v "$CLEAN_SNAPSHOT:/workspace:ro" \
-#     -v "$DIFF_DIR:/mnt/diff:ro" \
-#     -v "$SKILL_DIR:/mnt/skill:ro" \
-#     -e OZ_API_KEY="$OZ_API_KEY" \
-#     repo-sync/pr-description \
+#     -e WARP_API_KEY \
+#     -v "$CLEAN_SNAPSHOT:/mnt/snapshot:ro" \
+#     -v "$DIFF_FILE:/mnt/diff/public.diff:ro" \
+#     repo-sync-pr-description \
 #     agent run \
-#       --skill /mnt/skill/SKILL.md \
+#       --skill pr-description \
+#       --cwd /mnt/snapshot \
 #       --output-format json
 
-FROM python:3.12-slim
+FROM warpdotdev/warp-agent:latest-preview
 
-# Install the oz CLI.  Pin the version for reproducible builds.
-RUN pip install --no-cache-dir oz-sdk==0.1.0
+# Install the PR description skill where the --skill flag can discover it.
+# The oz CLI searches .warp/skills/ in the home directory and the working
+# directory.  We place it in the home directory because the working directory
+# is a read-only volume mount that would overlay any files placed here at
+# build time.
+COPY .agents/skills/pr-description/SKILL.md /home/warp-agent/.warp/skills/pr-description/SKILL.md
 
-# Do not run as root.
-RUN useradd --create-home --shell /bin/bash agent
-USER agent
-
-WORKDIR /workspace
-
-# Default entrypoint is the oz CLI.  The workflow overrides the command
-# arguments to pass the skill file and output format.
-ENTRYPOINT ["oz"]
+# Use a minimal entrypoint that skips git/gh setup (isolation: no access
+# to private repo history or credentials).
+COPY docker/pr-description/entrypoint.sh /pr-description-entrypoint.sh
+ENTRYPOINT ["/pr-description-entrypoint.sh"]
