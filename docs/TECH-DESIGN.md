@@ -72,7 +72,7 @@ the restack workflow has two trigger modes:
 3. rebases and pushes the PR (see rebase logic below)
 
 **needs-restack mode** (triggered by `pull_request` `labeled` with `repo-sync:needs-restack`):
-1. the approve workflow adds this label when it detects a PR with more than one commit (e.g., GitHub auto-retargeted it)
+1. a user can add this label to trigger the restack workflow, in case something got stuck and needs a kick.
 2. rebases and pushes the labeled PR (see rebase logic below).  no watermark update
 
 **rebase logic (both modes):**
