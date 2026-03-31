@@ -10,9 +10,17 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import NamedTuple
 
 from repo_sync.strip.detect import is_binary
 from repo_sync.strip.markers import MarkerError, strip_private_regions, validate_markers
+
+
+class StripResult(NamedTuple):
+    """Result of a :func:`strip_tree` call."""
+
+    errors: list[str]
+    warnings: list[str]
 
 
 class StrippingError(Exception):
@@ -54,7 +62,7 @@ def strip_tree(
     *,
     validate_only: bool = False,
     paths: list[str] | None = None,
-) -> list[str]:
+) -> StripResult:
     """Strip private content from the tree rooted at *root*.
 
     When *validate_only* is True, no files are modified; only validation
@@ -65,7 +73,7 @@ def strip_tree(
     always performed on the full tree.  Directory removal is skipped
     in validate-only mode.
 
-    Returns a list of error strings.  An empty list means success.
+    Returns a :class:`StripResult` containing errors and warnings.
     Raises ``StrippingError`` wrapping all errors when not in
     validate-only mode and errors are found.
 
@@ -77,6 +85,7 @@ def strip_tree(
         raise ValueError("paths can only be used with validate_only=True")
 
     errors: list[str] = []
+    warnings: list[str] = []
 
     if not validate_only:
         # Step 1: remove private/ directories before anything else.
@@ -106,12 +115,13 @@ def strip_tree(
             # Binary files are left as-is; no marker stripping.
             continue
 
-        # Attempt UTF-8 decode.
+        # Attempt UTF-8 decode.  Files that cannot be decoded are treated
+        # as binary (skipped), but we log a warning so the user can review.
         try:
             raw = Path(filepath).read_bytes()
             text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            errors.append(f"{rel}: failed to decode as UTF-8 ({exc})")
+        except UnicodeDecodeError:
+            warnings.append(f"{rel}: not valid UTF-8, treating as binary")
             continue
 
         lines = text.splitlines(keepends=True)
@@ -130,7 +140,7 @@ def strip_tree(
     if errors and not validate_only:
         raise StrippingError("\n".join(errors))
 
-    return errors
+    return StripResult(errors, warnings)
 
 
 def _expand_paths(root: str, patterns: list[str]) -> list[str]:

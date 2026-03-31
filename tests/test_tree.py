@@ -144,7 +144,7 @@ class TestSymlinkHandling:
         """Validate-only mode also detects symlinks."""
         _write(tmp_path, "real.txt", "content")
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("symlinks" in e for e in errors)
 
 
@@ -205,12 +205,15 @@ class TestUtf8Handling:
         strip_tree(str(tmp_path))
         assert (tmp_path / "text.py").read_text(encoding="utf-8") == "café\nnaïve\n"
 
-    def test_latin1_file_raises(self, tmp_path: Path) -> None:
-        """A file that fails UTF-8 decoding raises an error."""
-        # Latin-1 encoded string (not valid UTF-8).
-        _write(tmp_path, "bad.txt", "café".encode("latin-1"))
-        with pytest.raises(StrippingError, match="UTF-8"):
-            strip_tree(str(tmp_path))
+    def test_non_utf8_file_treated_as_binary(self, tmp_path: Path) -> None:
+        """A file that fails UTF-8 decoding is skipped with a warning."""
+        data = "café".encode("latin-1")
+        _write(tmp_path, "bad.txt", data)
+        result = strip_tree(str(tmp_path))
+        assert result.errors == []
+        assert any("not valid UTF-8" in w for w in result.warnings)
+        # The file is left untouched.
+        assert (tmp_path / "bad.txt").read_bytes() == data
 
     def test_utf16_classified_as_binary(self, tmp_path: Path) -> None:
         """A UTF-16 file (contains null bytes) is classified as binary."""
@@ -311,13 +314,13 @@ class TestValidateOnlyMode:
     def test_detects_unpaired_start(self, tmp_path: Path) -> None:
         """Detects unpaired private-start."""
         _write(tmp_path, "bad.rs", "// !repo-sync: private-start\ncontent\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("unterminated" in e for e in errors)
 
     def test_detects_unpaired_end(self, tmp_path: Path) -> None:
         """Detects unpaired private-end."""
         _write(tmp_path, "bad.rs", "content\n// !repo-sync: private-end\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("without matching" in e for e in errors)
 
     def test_detects_nested_markers(self, tmp_path: Path) -> None:
@@ -330,20 +333,20 @@ class TestValidateOnlyMode:
             "content\n"
             "// !repo-sync: private-end\n",
         )
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("nested" in e for e in errors)
 
     def test_detects_symlinks(self, tmp_path: Path) -> None:
         """Detects symlinks anywhere in the repo."""
         _write(tmp_path, "real.txt", "content")
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("symlinks" in e for e in errors)
 
     def test_passes_clean_repo(self, tmp_path: Path) -> None:
         """Passes on a repo with no markers and no symlinks."""
         _write(tmp_path, "code.rs", "fn main() {}\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert errors == []
 
     def test_passes_valid_markers(self, tmp_path: Path) -> None:
@@ -353,7 +356,7 @@ class TestValidateOnlyMode:
             "code.rs",
             "pub\n// !repo-sync: private-start\npriv\n// !repo-sync: private-end\npub2\n",
         )
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert errors == []
 
     def test_paths_filter(self, tmp_path: Path) -> None:
@@ -371,13 +374,13 @@ class TestValidateOnlyMode:
         # Only validate good.rs -- should pass.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["good.rs"]
-        )
+        ).errors
         assert errors == []
 
         # Validate bad.rs -- should fail.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["bad.rs"]
-        )
+        ).errors
         assert len(errors) > 0
 
     def test_validate_only_does_not_modify(self, tmp_path: Path) -> None:
@@ -403,7 +406,7 @@ class TestValidateOnlyMode:
         private_dir = tmp_path / "private"
         private_dir.mkdir()
         (private_dir / "link.txt").symlink_to(tmp_path / "public.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("symlinks" in e for e in errors)
 
     def test_paths_glob_pattern(self, tmp_path: Path) -> None:
@@ -421,7 +424,7 @@ class TestValidateOnlyMode:
         # Glob matching all .rs files under src/.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["src/*.rs"]
-        )
+        ).errors
         assert any("unterminated" in e for e in errors)
 
     def test_paths_no_match_errors(self, tmp_path: Path) -> None:
@@ -429,5 +432,5 @@ class TestValidateOnlyMode:
         _write(tmp_path, "code.rs", "fn main() {}\n")
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["nonexistent/*.xyz"]
-        )
+        ).errors
         assert any("matched no files" in e for e in errors)

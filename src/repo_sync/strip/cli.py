@@ -47,18 +47,23 @@ def main(argv: list[str] | None = None) -> int:
     paths = args.paths if args.paths else None
 
     if args.validate_only:
-        errors = strip_tree(args.directory, validate_only=True, paths=paths)
-        if errors:
-            for err in errors:
+        result = strip_tree(args.directory, validate_only=True, paths=paths)
+        for w in result.warnings:
+            print(f"warning: {w}", file=sys.stderr)
+        if result.errors:
+            for err in result.errors:
                 print(err, file=sys.stderr)
             return 1
         return 0
 
     try:
-        strip_tree(args.directory)
+        result = strip_tree(args.directory)
     except StrippingError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+    for w in result.warnings:
+        print(f"warning: {w}", file=sys.stderr)
 
     return 0
 
