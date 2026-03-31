@@ -17,7 +17,9 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 
 from repo_sync.stack.gh_ops import GhOps
@@ -95,6 +97,7 @@ PR_DESCRIPTION_IMAGE = os.environ.get(
 def _run_pr_description_agent(
     snapshot_dir: str,
     patch_file: str,
+    short_sha: str,
 ) -> tuple[str | None, str | None]:
     """Run the PR description agent via Docker.
 
@@ -110,7 +113,9 @@ def _run_pr_description_agent(
     Returns (title, body) if the agent succeeds, (None, None) otherwise.
     """
     try:
-        result = subprocess.run(
+        print(f"::group::Generating PR description for {short_sha}", flush=True)
+
+        proc = subprocess.Popen(
             [
                 "docker", "run", "--rm",
                 "-e", "WARP_API_KEY",
@@ -121,22 +126,53 @@ def _run_pr_description_agent(
                 "--skill", "pr-description",
                 "--cwd", "/mnt/snapshot",
                 "--output-format", "json",
+                "--model", "claude-4-5-haiku",
+                "--share",
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=300,
         )
-        if result.returncode != 0:
+
+        # Use a timer to enforce a timeout, since we read stdout line by
+        # line and cannot use Popen.wait(timeout=) concurrently.
+        timed_out = False
+
+        def _kill_on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            proc.kill()
+
+        timer = threading.Timer(300, _kill_on_timeout)
+        timer.start()
+
+        stdout_lines: list[str] = []
+        try:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                stdout_lines.append(line)
+            proc.wait()
+        finally:
+            timer.cancel()
+            print("::endgroup::", flush=True)
+
+        if timed_out:
+            logger.warning("PR description agent timed out.")
+            return None, None
+
+        if proc.returncode != 0:
+            stderr_output = proc.stderr.read() if proc.stderr else ""
             logger.warning(
                 "PR description agent exited with code %d: %s",
-                result.returncode,
-                (result.stderr or "")[:500],
+                proc.returncode,
+                (stderr_output or "")[:500],
             )
             return None, None
 
         # Parse agent text from JSON-lines stdout.
         agent_text_parts: list[str] = []
-        for line in result.stdout.splitlines():
+        for line in stdout_lines:
             line = line.strip()
             if not line:
                 continue
@@ -155,9 +191,6 @@ def _run_pr_description_agent(
         logger.warning("PR description agent produced no parseable output.")
         return None, None
 
-    except subprocess.TimeoutExpired:
-        logger.warning("PR description agent timed out.")
-        return None, None
     except Exception:
         logger.warning("PR description agent failed.", exc_info=True)
         return None, None
@@ -349,7 +382,7 @@ def _sync_private_to_public(
         pr_body = fallback.body
 
         agent_title, agent_body = _run_pr_description_agent(
-            snapshot_dir, patch_file,
+            snapshot_dir, patch_file, short_sha,
         )
         if agent_title:
             pr_title = agent_title
