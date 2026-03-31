@@ -1,0 +1,106 @@
+# Reusable workflow: sync creation.
+# Triggered by a consuming repo on push to its default branch.
+# All decision-making logic lives in Python (repo_sync.workflows.cli).
+
+name: sync
+
+on:
+  workflow_call:
+    inputs:
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
+        required: true
+        type: string
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      slack_webhook_url:
+        description: "Slack webhook URL for stripping error notifications."
+        required: false
+        type: string
+        default: ""
+      app_id:
+        description: "GitHub App ID."
+        required: true
+        type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use (e.g. v1, main, david/integration)."
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      app_private_key:
+        description: "GitHub App private key."
+        required: true
+
+concurrency:
+  group: repo-sync-${{ github.repository == inputs.private_repo && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: "${{ steps.token.outputs.token }}"
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "warp-repo-sync[bot]"
+          git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
+
+      # Checkout the peer repo (always, to avoid conditional complexity).
+      # The Python code exits early if there are no unsynced commits.
+      - name: Checkout peer repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
+          ref: ${{ github.event.repository.default_branch }}
+          path: peer
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ inputs.repo_sync_ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repo-sync tools
+        run: pip install -e .repo-sync
+
+      - name: Run sync
+        run: |
+          python -m repo_sync.workflows.cli run-sync \
+            --source-repo-dir . \
+            --peer-repo-dir peer \
+            --source-repo "${{ github.repository }}" \
+            --public-repo "${{ inputs.public_repo }}" \
+            --private-repo "${{ inputs.private_repo }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --slack-webhook-url "${{ inputs.slack_webhook_url }}" \
+            --repo-sync-dir .repo-sync

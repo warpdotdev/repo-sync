@@ -1,0 +1,140 @@
+# Reusable workflow: restack after sync PR merge.
+# Triggered by a consuming repo on pull_request closed+merged for repo-sync/
+# branches, or via workflow_dispatch for stuck stack recovery.
+#
+# Implements: watermark update, rebase --onto for squash merge compatibility,
+# auto-merge enable on new stack bottom, CI failure -> human assignment,
+# conflict -> agent invocation with mandatory human sign-off.
+
+name: restack
+
+on:
+  workflow_call:
+    inputs:
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
+        required: true
+        type: string
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      app_id:
+        description: "GitHub App ID."
+        required: true
+        type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use."
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      app_private_key:
+        description: "GitHub App private key."
+        required: true
+  # workflow_dispatch is used for stuck-stack recovery.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Stuck PR number to restack."
+        required: true
+        type: string
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
+        required: true
+        type: string
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+
+# Serialize ALL restack operations to prevent concurrent rebases.
+concurrency:
+  group: repo-sync-restack-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    runs-on: ubuntu-latest
+    # Run if: (a) the PR was merged (normal restack), (b) dispatched for
+    # stuck stack recovery, or (c) labeled with repo-sync:needs-restack
+    # (triggered by the approve workflow for auto-retargeted PRs).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
+      (github.event.action == 'labeled' &&
+       github.event.label.name == 'repo-sync:needs-restack' &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      PUBLIC_REPO: ${{ inputs.public_repo }}
+      PRIVATE_REPO: ${{ inputs.private_repo }}
+      ESCALATE_TO: ${{ inputs.escalate_to }}
+    steps:
+      # Generate a token for both workflow_call and workflow_dispatch.
+      # For workflow_call, secrets are passed from the caller.
+      # For workflow_dispatch, secrets come from the repo's own secrets.
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.app_id }}
+          private-key: ${{ secrets.app_private_key || secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Checkout repo-sync tooling
+        uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ inputs.repo_sync_ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repo-sync tools
+        run: pip install -e .repo-sync
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "warp-repo-sync[bot]"
+          git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
+
+      # All restack logic (context derivation, direction detection, watermark
+      # update, find next PR, rebase, push, label management) is in Python.
+      # The event payload provides all needed GitHub context.
+      - name: Run restack
+        run: |
+          python -m repo_sync.workflows.cli restack-pr \
+            --event-path "$GITHUB_EVENT_PATH" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
+            --gh-repo "${{ github.repository }}" \
+            --public-repo "${PUBLIC_REPO}" \
+            --private-repo "${PRIVATE_REPO}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --repo-dir .

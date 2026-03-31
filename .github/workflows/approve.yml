@@ -1,0 +1,115 @@
+# Reusable workflow: sync PR approval and conflict resolution.
+# Triggered by a consuming repo on pull_request events for repo-sync/ PRs
+# targeting the default branch (i.e., PRs at the bottom of the stack).
+#
+# For clean PRs: approves and enables auto-merge (API-only, no git ops).
+# For conflicting PRs: invokes the conflict resolution agent, assigns a
+# reviewer, and does NOT approve (human approval required).
+#
+# Rebasing is the restack workflow's responsibility — this workflow does
+# NOT rebase clean PRs.  It only performs git operations for conflict
+# resolution (rebase to produce conflict markers for the agent).
+#
+# Uses a dedicated "approver bot" GitHub App for all operations.  A separate
+# identity from the primary sync bot is required because GitHub does not allow
+# a PR's author to approve it.
+
+name: approve
+
+on:
+  workflow_call:
+    inputs:
+      public_repo:
+        description: "Public repo (e.g. warpdotdev/warp-public)."
+        required: true
+        type: string
+      private_repo:
+        description: "Private repo (e.g. warpdotdev/warp-internal)."
+        required: true
+        type: string
+      escalate_to:
+        description: "GitHub team or user to escalate to on timeout."
+        required: false
+        type: string
+        default: "@oncall-client-primary"
+      approver_app_id:
+        description: "GitHub App ID (approver bot)."
+        required: true
+        type: string
+      repo_sync_ref:
+        description: "Ref of the repo-sync repo to use."
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      approver_app_private_key:
+        description: "GitHub App private key (approver bot)."
+        required: true
+
+# Serialize approval runs per PR.  Multiple events (opened, synchronize,
+# edited) can fire near-simultaneously; without this, parallel runs would
+# all approve before any completes.  Use cancel-in-progress: false so a
+# running approval completes fully (avoiding partial state like approved
+# but auto-merge not enabled); the queued run will skip via skip_check.
+concurrency:
+  group: repo-sync-approve-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    # Only run for repo-sync/ branches targeting the default branch.
+    if: startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate installation token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ inputs.approver_app_id }}
+          private-key: ${{ secrets.approver_app_private_key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Set GH_TOKEN
+        run: echo "GH_TOKEN=${{ steps.token.outputs.token }}" >> "$GITHUB_ENV"
+
+      # Minimal checkout so the gh CLI has a git context.  The full
+      # fetch-depth: 0 clone is only done for the conflict path.
+      - name: Checkout repo (shallow)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+
+      # Full fetch for the conflict path.  The Python code's conflict
+      # handler needs full history for rebase --onto.  This is a no-op
+      # cost for the clean path (Python exits before using git).
+      - name: Full fetch for conflict resolution
+        run: git fetch --unshallow origin 2>/dev/null || true
+
+      - name: Checkout repo-sync tooling
+        uses: actions/checkout@v4
+        with:
+          repository: warpdotdev/repo-sync
+          ref: ${{ inputs.repo_sync_ref }}
+          path: .repo-sync
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install repo-sync tools
+        run: pip install -e .repo-sync
+
+      - name: Run approve
+        run: |
+          python -m repo_sync.workflows.cli approve-pr \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-branch "${{ github.event.pull_request.head.ref }}" \
+            --default-branch "${{ github.event.repository.default_branch }}" \
+            --gh-repo "${{ github.repository }}" \
+            --escalate-to "${{ inputs.escalate_to }}" \
+            --repo-dir .

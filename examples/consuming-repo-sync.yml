@@ -1,0 +1,107 @@
+# Example: consuming repo workflow for repo-sync.
+#
+# Copy this file to .github/workflows/repo-sync.yml in your consuming repo
+# and adjust the configuration values below.
+#
+# Prerequisites for the consuming repo:
+#   - A GitHub App ("sync bot") installed on both repos with contents:write,
+#     pull_requests:write, workflows:write, and metadata:read permissions.
+#     Store as REPO_SYNC_APP_ID / REPO_SYNC_APP_PRIVATE_KEY.
+#   - A second GitHub App ("approver bot") with pull_requests:write permission.
+#     Store as REPO_SYNC_APPROVER_APP_ID / REPO_SYNC_APPROVER_APP_PRIVATE_KEY.
+#     This app approves clean sync PRs (a separate identity is needed because
+#     GitHub does not allow a PR's author to approve it).
+#   - Auto-merge enabled as a repo-level setting.
+#   - Required PR approvals on the default branch.
+#   - Squash merge configured to preserve the PR description in the commit message.
+#   - Branch protection rules on repo-sync/* branches (only the sync workflow's
+#     token can create/push to them).
+
+name: repo-sync
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [closed, opened, synchronize, edited, labeled]
+    branches: [main]
+  schedule:
+    # Run escalation checks every 15 minutes.
+    - cron: "*/15 * * * *"
+
+# -------------------------------------------------------------------------
+# Configuration — adjust these for your repo pair.
+# NOTE: GitHub Actions does not support ${{ env.* }} in reusable workflow
+# `with:` blocks, so values must be hardcoded directly below.
+# -------------------------------------------------------------------------
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Sync creation: triggered on push to default branch.
+  # Each job generates its own token so no shared auth job runs unnecessarily.
+  # -----------------------------------------------------------------------
+  sync:
+    if: github.event_name == 'push'
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    with:
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      escalate_to: "@oncall-client-primary"
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
+      # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
+    secrets:
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+
+  # -----------------------------------------------------------------------
+  # Restack: triggered when a sync PR is merged.
+  # -----------------------------------------------------------------------
+  restack:
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'repo-sync:needs-restack' &&
+       startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
+    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
+    with:
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      escalate_to: "@oncall-client-primary"
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
+    secrets:
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+
+  # -----------------------------------------------------------------------
+  # Approve: triggered when a sync PR targets the default branch.
+  # Approves clean PRs (using the separate approver app) and handles
+  # conflict resolution for PRs that can't merge cleanly.
+  # -----------------------------------------------------------------------
+  approve:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      startsWith(github.event.pull_request.head.ref, 'repo-sync/')
+    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@v1
+    with:
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      approver_app_id: ${{ vars.REPO_SYNC_APPROVER_APP_ID }}
+    secrets:
+      approver_app_private_key: ${{ secrets.REPO_SYNC_APPROVER_APP_PRIVATE_KEY }}
+
+  # -----------------------------------------------------------------------
+  # Escalation cron: runs on schedule.
+  # -----------------------------------------------------------------------
+  escalation:
+    if: github.event_name == 'schedule'
+    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
+    with:
+      escalate_to: "@oncall-client-primary"
+      escalate_after: "1h"
+      public_repo: warpdotdev/warp-public
+      private_repo: warpdotdev/warp-internal
+      app_id: ${{ vars.REPO_SYNC_APP_ID }}
+    secrets:
+      app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
