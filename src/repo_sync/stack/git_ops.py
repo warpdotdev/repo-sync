@@ -172,13 +172,16 @@ class GitOps:
         import tarfile
         import logging
 
-        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        # Skip the LFS smudge filter.  git archive operates on the object
+        # store, so LFS pointer files are all we need (and all we want —
+        # downloading the real blobs is wasteful and may fail without auth).
+        archive_env = {**os.environ, **self._env_additions, "GIT_LFS_SKIP_SMUDGE": "1"}
         proc = subprocess.Popen(
             ["git", "archive", ref],
             cwd=self.repo_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=env,
+            env=archive_env,
         )
         try:
             with tarfile.open(fileobj=proc.stdout, mode="r|*") as tar:
