@@ -9,6 +9,7 @@ header, or falls back to the commit message for direct pushes.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -18,6 +19,26 @@ class PRDescription:
 
     title: str
     body: str
+
+
+def parse_agent_output(raw_text: str) -> PRDescription | None:
+    """Parse the structured output from the PR description agent.
+
+    Expects the text to contain a TITLE: line followed by a DESCRIPTION:
+    section.  Returns a PRDescription if both sections are found, or None
+    otherwise.
+    """
+    title_match = re.search(r"^TITLE:[ \t]*(.+)$", raw_text, re.MULTILINE)
+    desc_match = re.search(
+        r"^DESCRIPTION:[ \t]*(.*)", raw_text, re.MULTILINE | re.DOTALL
+    )
+    if not title_match or not desc_match:
+        return None
+    title = title_match.group(1).strip()
+    body = desc_match.group(1).strip()
+    if not title or not body:
+        return None
+    return PRDescription(title=title, body=body)
 
 
 def private_to_public_fallback(short_sha: str) -> PRDescription:

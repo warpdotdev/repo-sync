@@ -12,17 +12,20 @@ restarts safe.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.trailers import SyncOrigin
-from repo_sync.workflows.descriptions import private_to_public_fallback
+from repo_sync.workflows.descriptions import parse_agent_output, private_to_public_fallback
 from repo_sync.workflows.sync import (
     build_public_to_private_description,
     enumerate_unsynced_commits,
@@ -82,54 +85,114 @@ def _run_strip(snapshot_dir: str) -> bool:
         return False
 
 
+# Docker image for the PR description agent.  Built locally by the sync
+# workflow from docker/pr-description/Dockerfile (not pushed to a registry).
+# Can be overridden via environment variable for testing.
+PR_DESCRIPTION_IMAGE = os.environ.get(
+    "REPO_SYNC_PR_DESCRIPTION_IMAGE",
+    "repo-sync-pr-description",
+)
+
+
 def _run_pr_description_agent(
     snapshot_dir: str,
     patch_file: str,
-    repo_sync_dir: str,
-    agent_out_dir: str,
+    short_sha: str,
 ) -> tuple[str | None, str | None]:
     """Run the PR description agent via Docker.
 
+    The agent runs inside an isolated container with:
+      - the clean codebase snapshot mounted at /mnt/snapshot (read-only)
+      - the public diff mounted at /mnt/diff/public.diff (read-only)
+      - the pr-description skill baked into the image
+
+    The agent writes its output to stdout as JSON lines.  This function
+    extracts text from ``{"type": "agent"}`` messages and parses the
+    structured TITLE/DESCRIPTION format.
+
     Returns (title, body) if the agent succeeds, (None, None) otherwise.
     """
-    skill_path = os.path.abspath(os.path.join(
-        repo_sync_dir, ".agents", "skills", "pr-description", "SKILL.md"
-    ))
-    if not os.path.exists(skill_path):
-        return None, None
-
     try:
-        result = subprocess.run(
+        print(f"::group::Generating PR description for {short_sha}", flush=True)
+
+        proc = subprocess.Popen(
             [
                 "docker", "run", "--rm",
-                "-v", f"{snapshot_dir}:/workspace:ro",
-                "-v", f"{patch_file}:/diff.patch:ro",
-                "-v", f"{skill_path}:/skill.md:ro",
-                "-v", f"{agent_out_dir}:/output",
-                "-w", "/workspace",
-                "warpdotdev/repo-sync-agent:v1",
-                "oz", "agent", "run",
-                "--skill-file", "/skill.md",
-                "--context-file", "/diff.patch",
-                "--output-dir", "/output",
+                "-e", "WARP_API_KEY",
+                "-v", f"{os.path.abspath(snapshot_dir)}:/mnt/snapshot:ro",
+                "-v", f"{os.path.abspath(patch_file)}:/mnt/diff/public.diff:ro",
+                PR_DESCRIPTION_IMAGE,
+                "agent", "run",
+                "--skill", "pr-description",
+                "--cwd", "/mnt/snapshot",
+                "--output-format", "json",
+                "--model", "claude-4-5-haiku",
+                "--share",
             ],
-            capture_output=True,
-            timeout=300,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        if result.returncode != 0:
+
+        # Use a timer to enforce a timeout, since we read stdout line by
+        # line and cannot use Popen.wait(timeout=) concurrently.
+        timed_out = False
+
+        def _kill_on_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            proc.kill()
+
+        timer = threading.Timer(300, _kill_on_timeout)
+        timer.start()
+
+        stdout_lines: list[str] = []
+        try:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                stdout_lines.append(line)
+            proc.wait()
+        finally:
+            timer.cancel()
+            print("::endgroup::", flush=True)
+
+        if timed_out:
+            logger.warning("PR description agent timed out.")
             return None, None
 
-        title = None
-        body = None
-        title_file = os.path.join(agent_out_dir, "title.txt")
-        body_file = os.path.join(agent_out_dir, "body.txt")
-        if os.path.exists(title_file):
-            title = open(title_file).read().strip()
-        if os.path.exists(body_file):
-            body = open(body_file).read().strip()
-        return title, body
+        if proc.returncode != 0:
+            stderr_output = proc.stderr.read() if proc.stderr else ""
+            logger.warning(
+                "PR description agent exited with code %d: %s",
+                proc.returncode,
+                (stderr_output or "")[:500],
+            )
+            return None, None
+
+        # Parse agent text from JSON-lines stdout.
+        agent_text_parts: list[str] = []
+        for line in stdout_lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("type") == "agent":
+                agent_text_parts.append(msg.get("text", ""))
+
+        agent_text = "".join(agent_text_parts)
+        desc = parse_agent_output(agent_text)
+        if desc:
+            return desc.title, desc.body
+
+        logger.warning("PR description agent produced no parseable output.")
+        return None, None
 
     except Exception:
+        logger.warning("PR description agent failed.", exc_info=True)
         return None, None
 
 
@@ -258,7 +321,6 @@ def _sync_private_to_public(
     stack_base_branch: str,
     source_repo: str,
     slack_webhook_url: str,
-    repo_sync_dir: str,
 ) -> bool:
     """Handle private-to-public sync for a single commit.
 
@@ -315,14 +377,12 @@ def _sync_private_to_public(
         peer_git.commit_amend_message("repo-sync: sync from private", trailer)
 
         # PR description agent.
-        agent_out_dir = f"/tmp/agent-out-{short_sha}"
-        os.makedirs(agent_out_dir, exist_ok=True)
         fallback = private_to_public_fallback(short_sha)
         pr_title = fallback.title
         pr_body = fallback.body
 
         agent_title, agent_body = _run_pr_description_agent(
-            snapshot_dir, patch_file, repo_sync_dir, agent_out_dir,
+            snapshot_dir, patch_file, short_sha,
         )
         if agent_title:
             pr_title = agent_title
@@ -339,12 +399,8 @@ def _sync_private_to_public(
         shutil.rmtree(snapshot_dir, ignore_errors=True)
         shutil.rmtree(prev_snapshot_dir, ignore_errors=True)
         shutil.rmtree(diff_repo, ignore_errors=True)
-        for path in [patch_file, f"/tmp/agent-out-{short_sha}"]:
-            if os.path.exists(path):
-                if os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
-                else:
-                    os.remove(path)
+        if os.path.exists(patch_file):
+            os.remove(patch_file)
 
 
 def _sync_public_to_private(
@@ -431,7 +487,6 @@ def create_sync_prs(
     default_branch: str,
     stack_top: str | None,
     slack_webhook_url: str = "",
-    repo_sync_dir: str = "",
 ) -> None:
     """Create sync PRs for all unsynced commits.
 
@@ -473,7 +528,6 @@ def create_sync_prs(
                         stack_base_branch=stack_base_branch,
                         source_repo=source_repo,
                         slack_webhook_url=slack_webhook_url,
-                        repo_sync_dir=repo_sync_dir,
                     )
                 else:
                     created = _sync_public_to_private(
@@ -521,7 +575,6 @@ def run_sync(
     private_repo: str,
     default_branch: str,
     slack_webhook_url: str = "",
-    repo_sync_dir: str = "",
 ) -> None:
     """Run the full sync workflow: watermark, commit enumeration, PR creation.
 
@@ -572,5 +625,4 @@ def run_sync(
         default_branch=default_branch,
         stack_top=stack_top,
         slack_webhook_url=slack_webhook_url,
-        repo_sync_dir=repo_sync_dir,
     )

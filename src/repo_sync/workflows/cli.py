@@ -251,7 +251,6 @@ def cmd_run_sync(args: argparse.Namespace) -> None:
             private_repo=args.private_repo,
             default_branch=args.default_branch,
             slack_webhook_url=args.slack_webhook_url,
-            repo_sync_dir=args.repo_sync_dir,
         )
     except PermanentSyncError as e:
         logging.error("%s", e)
@@ -417,7 +416,6 @@ def main() -> None:
     p.add_argument("--private-repo", required=True)
     p.add_argument("--default-branch", required=True)
     p.add_argument("--slack-webhook-url", default="")
-    p.add_argument("--repo-sync-dir", default="", help="Path to the repo-sync checkout.")
     p.set_defaults(func=cmd_run_sync)
 
     # escalation-check.
