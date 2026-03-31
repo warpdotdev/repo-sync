@@ -38,6 +38,9 @@ on:
       app_private_key:
         description: "GitHub App private key."
         required: true
+      warp_api_key:
+        description: "Warp API key."
+        required: true
 
 concurrency:
   group: repo-sync-${{ github.repository == inputs.private_repo && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
@@ -106,3 +109,5 @@ jobs:
             --private-repo "${{ inputs.private_repo }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
             --slack-webhook-url "${{ inputs.slack_webhook_url }}"
+        env:
+          WARP_API_KEY: ${{ secrets.warp_api_key }}
