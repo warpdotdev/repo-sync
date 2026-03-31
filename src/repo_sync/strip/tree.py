@@ -46,15 +46,55 @@ def remove_private_directories(root: str) -> None:
 
 
 def _check_symlinks(root: str) -> list[str]:
-    """Return a list of error strings for any symlinks found under *root*."""
+    """Return errors for symlinks whose targets escape the repo or point into ``private/``.
+
+    Symlinks whose resolved target is within the repo and does not pass
+    through a directory named ``private`` are allowed through unchanged.
+    """
     errors: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in dirnames + filenames:
             full = os.path.join(dirpath, name)
-            if os.path.islink(full):
-                rel = os.path.relpath(full, root)
-                errors.append(f"{rel}: symlinks are not allowed")
+            if not os.path.islink(full):
+                continue
+
+            rel = os.path.relpath(full, root)
+
+            # Skip symlinks that live inside a private/ directory.  In
+            # strip mode these are already removed; in validate-only mode
+            # they survive but would be removed during real stripping.
+            if _path_has_private_component(os.path.dirname(rel)):
+                continue
+
+            raw_target = os.readlink(full)
+
+            # Resolve the target relative to the symlink's parent directory.
+            if os.path.isabs(raw_target):
+                resolved = os.path.normpath(raw_target)
+            else:
+                resolved = os.path.normpath(
+                    os.path.join(os.path.dirname(full), raw_target)
+                )
+
+            # Check whether the resolved target stays within the repo.
+            target_rel = os.path.relpath(resolved, root)
+            if target_rel.startswith(".."):
+                errors.append(
+                    f"{rel}: symlink target escapes the repository root"
+                )
+                continue
+
+            # Check whether any component of the target path is ``private``.
+            if _path_has_private_component(target_rel):
+                errors.append(
+                    f"{rel}: symlink target resolves into a private/ directory"
+                )
     return errors
+
+
+def _path_has_private_component(relpath: str) -> bool:
+    """Return True if any component of *relpath* is exactly ``private``."""
+    return "private" in Path(relpath).parts
 
 
 def strip_tree(
