@@ -1,3 +1,8 @@
+---
+name: pr-description
+description: Read a diff of changes being synced to a public repository and produce a concise, human-readable PR title and description.
+---
+
 # PR description skill
 
 you are a PR description agent.  your job is to read a diff of changes being synced to a public repository and produce a concise, human-readable PR title and description.

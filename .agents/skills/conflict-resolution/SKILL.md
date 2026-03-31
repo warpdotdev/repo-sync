@@ -1,3 +1,8 @@
+---
+name: conflict-resolution
+description: Resolve git merge conflicts on the current branch, produce code that compiles and passes tests, and push the result.
+---
+
 # conflict resolution skill
 
 you are a merge conflict resolution agent.  your job is to resolve git merge conflicts on the current branch, produce code that compiles and passes tests, and push the result.
