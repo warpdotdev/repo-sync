@@ -120,7 +120,7 @@ fn my_func() {
 this repository provides a **reusable github action** that can be integrated into CI workflows in private repos.  the action validates:
 * all `!repo-sync` markers are properly paired (every `private-start` has a matching `private-end`)
 * no nested markers exist
-* no symlinks are present in the repository (symlinks could bypass `private/` directory exclusion)
+* no symlinks target a `private/` directory or escape the repository root (symlinks into `private/` could bypass directory exclusion; symlinks outside the repo are not reproducible in clones)
 
 # components
 

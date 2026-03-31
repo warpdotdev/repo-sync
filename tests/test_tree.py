@@ -92,14 +92,23 @@ class TestRemovePrivateDirectories:
 
 
 class TestSymlinkHandling:
-    """Tests for symlink detection during tree stripping."""
+    """Tests for symlink validation during tree stripping."""
 
-    def test_symlink_outside_private_raises(self, tmp_path: Path) -> None:
-        """A symlink outside of private/ directories raises an error."""
+    def test_symlink_to_non_private_target_allowed(self, tmp_path: Path) -> None:
+        """A symlink to a non-private target is kept in the snapshot."""
         _write(tmp_path, "real.txt", "content")
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
-        with pytest.raises(StrippingError, match="symlinks are not allowed"):
-            strip_tree(str(tmp_path))
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "link.txt").is_symlink()
+        assert (tmp_path / "real.txt").exists()
+
+    def test_symlink_with_relative_parent_traversal_allowed(self, tmp_path: Path) -> None:
+        """A symlink using ``..`` that stays within the repo is allowed."""
+        _write(tmp_path, "data/file.txt", "content")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "link.txt").symlink_to("../data/file.txt")
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "src" / "link.txt").is_symlink()
 
     def test_symlink_inside_private_no_error(self, tmp_path: Path) -> None:
         """A symlink inside a private/ directory does not raise (it is removed)."""
@@ -111,41 +120,69 @@ class TestSymlinkHandling:
         strip_tree(str(tmp_path))
         assert not private_dir.exists()
 
-    def test_symlink_named_private_triggers_error(self, tmp_path: Path) -> None:
-        """A symlink named ``private`` pointing to a dir is not treated as a dir.
+    def test_symlink_named_private_to_non_private_target(self, tmp_path: Path) -> None:
+        """A symlink named ``private`` pointing to a non-private dir is allowed.
 
-        It survives directory removal and triggers the symlink error.
+        It survives directory removal because it is a symlink, and its
+        target is not under a ``private/`` directory.
         """
         target = tmp_path / "real_dir"
         target.mkdir()
         _write(tmp_path, "real_dir/file.txt", "content")
         (tmp_path / "private").symlink_to(target)
-        with pytest.raises(StrippingError, match="symlinks are not allowed"):
-            strip_tree(str(tmp_path))
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "private").is_symlink()
 
     def test_symlink_pointing_outside_repo(self, tmp_path: Path) -> None:
         """A symlink pointing outside the repo raises an error."""
         (tmp_path / "link.txt").symlink_to("/etc/hosts")
-        with pytest.raises(StrippingError, match="symlinks are not allowed"):
+        with pytest.raises(StrippingError, match="escapes the repository root"):
             strip_tree(str(tmp_path))
 
     def test_symlink_pointing_to_private_dir(self, tmp_path: Path) -> None:
-        """A symlink pointing to a private/ directory raises an error.
+        """A symlink whose target resolves into a private/ directory raises an error.
 
         The actual private/ dir is removed first, but the symlink (at a
-        different location) survives and triggers the error.
+        different location) survives and its target path is checked.
         """
         _write(tmp_path, "private/secret.txt", "secret")
         (tmp_path / "sneaky").symlink_to(tmp_path / "private")
-        with pytest.raises(StrippingError, match="symlinks are not allowed"):
+        with pytest.raises(StrippingError, match="resolves into a private/ directory"):
             strip_tree(str(tmp_path))
 
-    def test_symlink_detected_in_validate_only(self, tmp_path: Path) -> None:
-        """Validate-only mode also detects symlinks."""
+    def test_symlink_to_file_inside_private(self, tmp_path: Path) -> None:
+        """A symlink targeting a file inside a private/ directory raises an error."""
+        _write(tmp_path, "private/secret.txt", "secret")
+        (tmp_path / "leak.txt").symlink_to("private/secret.txt")
+        with pytest.raises(StrippingError, match="resolves into a private/ directory"):
+            strip_tree(str(tmp_path))
+
+    def test_symlink_to_nested_private_dir(self, tmp_path: Path) -> None:
+        """A symlink targeting a path through a nested private/ directory errors."""
+        _write(tmp_path, "crates/private/lib.rs", "secret")
+        (tmp_path / "leak.txt").symlink_to("crates/private/lib.rs")
+        with pytest.raises(StrippingError, match="resolves into a private/ directory"):
+            strip_tree(str(tmp_path))
+
+    def test_symlink_escapes_repo_via_parent_traversal(self, tmp_path: Path) -> None:
+        """A relative symlink that escapes the repo via ``..`` raises an error."""
+        (tmp_path / "link.txt").symlink_to("../../outside/file.txt")
+        with pytest.raises(StrippingError, match="escapes the repository root"):
+            strip_tree(str(tmp_path))
+
+    def test_validate_only_detects_private_symlink(self, tmp_path: Path) -> None:
+        """Validate-only mode reports symlinks targeting private/ directories."""
+        _write(tmp_path, "private/secret.txt", "secret")
+        (tmp_path / "leak.txt").symlink_to("private/secret.txt")
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert any("private/ directory" in e for e in errors)
+
+    def test_validate_only_allows_safe_symlink(self, tmp_path: Path) -> None:
+        """Validate-only mode does not report symlinks to non-private targets."""
         _write(tmp_path, "real.txt", "content")
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
-        assert any("symlinks" in e for e in errors)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -205,12 +242,15 @@ class TestUtf8Handling:
         strip_tree(str(tmp_path))
         assert (tmp_path / "text.py").read_text(encoding="utf-8") == "café\nnaïve\n"
 
-    def test_latin1_file_raises(self, tmp_path: Path) -> None:
-        """A file that fails UTF-8 decoding raises an error."""
-        # Latin-1 encoded string (not valid UTF-8).
-        _write(tmp_path, "bad.txt", "café".encode("latin-1"))
-        with pytest.raises(StrippingError, match="UTF-8"):
-            strip_tree(str(tmp_path))
+    def test_non_utf8_file_treated_as_binary(self, tmp_path: Path) -> None:
+        """A file that fails UTF-8 decoding is skipped with a warning."""
+        data = "café".encode("latin-1")
+        _write(tmp_path, "bad.txt", data)
+        result = strip_tree(str(tmp_path))
+        assert result.errors == []
+        assert any("not valid UTF-8" in w for w in result.warnings)
+        # The file is left untouched.
+        assert (tmp_path / "bad.txt").read_bytes() == data
 
     def test_utf16_classified_as_binary(self, tmp_path: Path) -> None:
         """A UTF-16 file (contains null bytes) is classified as binary."""
@@ -311,13 +351,13 @@ class TestValidateOnlyMode:
     def test_detects_unpaired_start(self, tmp_path: Path) -> None:
         """Detects unpaired private-start."""
         _write(tmp_path, "bad.rs", "// !repo-sync: private-start\ncontent\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("unterminated" in e for e in errors)
 
     def test_detects_unpaired_end(self, tmp_path: Path) -> None:
         """Detects unpaired private-end."""
         _write(tmp_path, "bad.rs", "content\n// !repo-sync: private-end\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("without matching" in e for e in errors)
 
     def test_detects_nested_markers(self, tmp_path: Path) -> None:
@@ -330,20 +370,27 @@ class TestValidateOnlyMode:
             "content\n"
             "// !repo-sync: private-end\n",
         )
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert any("nested" in e for e in errors)
 
-    def test_detects_symlinks(self, tmp_path: Path) -> None:
-        """Detects symlinks anywhere in the repo."""
+    def test_detects_symlink_to_private(self, tmp_path: Path) -> None:
+        """Detects symlinks targeting a private/ directory."""
+        _write(tmp_path, "private/secret.txt", "secret")
+        (tmp_path / "leak.txt").symlink_to("private/secret.txt")
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert any("private/ directory" in e for e in errors)
+
+    def test_allows_safe_symlink(self, tmp_path: Path) -> None:
+        """A symlink to a non-private target produces no errors."""
         _write(tmp_path, "real.txt", "content")
         (tmp_path / "link.txt").symlink_to(tmp_path / "real.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
-        assert any("symlinks" in e for e in errors)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert errors == []
 
     def test_passes_clean_repo(self, tmp_path: Path) -> None:
         """Passes on a repo with no markers and no symlinks."""
         _write(tmp_path, "code.rs", "fn main() {}\n")
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert errors == []
 
     def test_passes_valid_markers(self, tmp_path: Path) -> None:
@@ -353,7 +400,7 @@ class TestValidateOnlyMode:
             "code.rs",
             "pub\n// !repo-sync: private-start\npriv\n// !repo-sync: private-end\npub2\n",
         )
-        errors = strip_tree(str(tmp_path), validate_only=True)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
         assert errors == []
 
     def test_paths_filter(self, tmp_path: Path) -> None:
@@ -371,13 +418,13 @@ class TestValidateOnlyMode:
         # Only validate good.rs -- should pass.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["good.rs"]
-        )
+        ).errors
         assert errors == []
 
         # Validate bad.rs -- should fail.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["bad.rs"]
-        )
+        ).errors
         assert len(errors) > 0
 
     def test_validate_only_does_not_modify(self, tmp_path: Path) -> None:
@@ -393,18 +440,18 @@ class TestValidateOnlyMode:
         strip_tree(str(tmp_path), validate_only=True)
         assert (tmp_path / "private" / "secret.txt").exists()
 
-    def test_symlink_inside_private_detected_in_validate_only(self, tmp_path: Path) -> None:
-        """In validate-only mode, symlinks inside private/ are detected.
+    def test_symlink_inside_private_ignored_in_validate_only(self, tmp_path: Path) -> None:
+        """In validate-only mode, symlinks inside private/ are not flagged.
 
-        Since validate-only does not remove private/ directories, the
-        symlink check walks the full tree and finds the symlink.
+        Since private/ directories would be removed during stripping,
+        symlinks inside them are not a concern.
         """
         _write(tmp_path, "public.txt", "content")
         private_dir = tmp_path / "private"
         private_dir.mkdir()
         (private_dir / "link.txt").symlink_to(tmp_path / "public.txt")
-        errors = strip_tree(str(tmp_path), validate_only=True)
-        assert any("symlinks" in e for e in errors)
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert errors == []
 
     def test_paths_glob_pattern(self, tmp_path: Path) -> None:
         """Glob patterns in paths are expanded correctly."""
@@ -421,7 +468,7 @@ class TestValidateOnlyMode:
         # Glob matching all .rs files under src/.
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["src/*.rs"]
-        )
+        ).errors
         assert any("unterminated" in e for e in errors)
 
     def test_paths_no_match_errors(self, tmp_path: Path) -> None:
@@ -429,5 +476,5 @@ class TestValidateOnlyMode:
         _write(tmp_path, "code.rs", "fn main() {}\n")
         errors = strip_tree(
             str(tmp_path), validate_only=True, paths=["nonexistent/*.xyz"]
-        )
+        ).errors
         assert any("matched no files" in e for e in errors)

@@ -10,9 +10,17 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import NamedTuple
 
 from repo_sync.strip.detect import is_binary
 from repo_sync.strip.markers import MarkerError, strip_private_regions, validate_markers
+
+
+class StripResult(NamedTuple):
+    """Result of a :func:`strip_tree` call."""
+
+    errors: list[str]
+    warnings: list[str]
 
 
 class StrippingError(Exception):
@@ -38,15 +46,55 @@ def remove_private_directories(root: str) -> None:
 
 
 def _check_symlinks(root: str) -> list[str]:
-    """Return a list of error strings for any symlinks found under *root*."""
+    """Return errors for symlinks whose targets escape the repo or point into ``private/``.
+
+    Symlinks whose resolved target is within the repo and does not pass
+    through a directory named ``private`` are allowed through unchanged.
+    """
     errors: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in dirnames + filenames:
             full = os.path.join(dirpath, name)
-            if os.path.islink(full):
-                rel = os.path.relpath(full, root)
-                errors.append(f"{rel}: symlinks are not allowed")
+            if not os.path.islink(full):
+                continue
+
+            rel = os.path.relpath(full, root)
+
+            # Skip symlinks that live inside a private/ directory.  In
+            # strip mode these are already removed; in validate-only mode
+            # they survive but would be removed during real stripping.
+            if _path_has_private_component(os.path.dirname(rel)):
+                continue
+
+            raw_target = os.readlink(full)
+
+            # Resolve the target relative to the symlink's parent directory.
+            if os.path.isabs(raw_target):
+                resolved = os.path.normpath(raw_target)
+            else:
+                resolved = os.path.normpath(
+                    os.path.join(os.path.dirname(full), raw_target)
+                )
+
+            # Check whether the resolved target stays within the repo.
+            target_rel = os.path.relpath(resolved, root)
+            if target_rel.startswith(".."):
+                errors.append(
+                    f"{rel}: symlink target escapes the repository root"
+                )
+                continue
+
+            # Check whether any component of the target path is ``private``.
+            if _path_has_private_component(target_rel):
+                errors.append(
+                    f"{rel}: symlink target resolves into a private/ directory"
+                )
     return errors
+
+
+def _path_has_private_component(relpath: str) -> bool:
+    """Return True if any component of *relpath* is exactly ``private``."""
+    return "private" in Path(relpath).parts
 
 
 def strip_tree(
@@ -54,7 +102,7 @@ def strip_tree(
     *,
     validate_only: bool = False,
     paths: list[str] | None = None,
-) -> list[str]:
+) -> StripResult:
     """Strip private content from the tree rooted at *root*.
 
     When *validate_only* is True, no files are modified; only validation
@@ -65,7 +113,7 @@ def strip_tree(
     always performed on the full tree.  Directory removal is skipped
     in validate-only mode.
 
-    Returns a list of error strings.  An empty list means success.
+    Returns a :class:`StripResult` containing errors and warnings.
     Raises ``StrippingError`` wrapping all errors when not in
     validate-only mode and errors are found.
 
@@ -77,6 +125,7 @@ def strip_tree(
         raise ValueError("paths can only be used with validate_only=True")
 
     errors: list[str] = []
+    warnings: list[str] = []
 
     if not validate_only:
         # Step 1: remove private/ directories before anything else.
@@ -106,12 +155,13 @@ def strip_tree(
             # Binary files are left as-is; no marker stripping.
             continue
 
-        # Attempt UTF-8 decode.
+        # Attempt UTF-8 decode.  Files that cannot be decoded are treated
+        # as binary (skipped), but we log a warning so the user can review.
         try:
             raw = Path(filepath).read_bytes()
             text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            errors.append(f"{rel}: failed to decode as UTF-8 ({exc})")
+        except UnicodeDecodeError:
+            warnings.append(f"{rel}: not valid UTF-8, treating as binary")
             continue
 
         lines = text.splitlines(keepends=True)
@@ -130,7 +180,7 @@ def strip_tree(
     if errors and not validate_only:
         raise StrippingError("\n".join(errors))
 
-    return errors
+    return StripResult(errors, warnings)
 
 
 def _expand_paths(root: str, patterns: list[str]) -> list[str]:

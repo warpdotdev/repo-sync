@@ -1,7 +1,7 @@
 name: "Validate repo-sync markers"
 description: >
   Validates that all !repo-sync markers are properly paired and non-nested,
-  and that no symlinks exist in the repository.
+  and that no symlinks target private/ directories or escape the repository root.
 
 inputs:
   paths:

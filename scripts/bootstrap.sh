@@ -70,6 +70,47 @@ export GH_PAGER="cat"
 HEAD_SHA=$(git rev-parse HEAD)
 SHORT_SHA="${HEAD_SHA:0:7}"
 
+# ---------------------------------------------------------------------------
+# Pre-flight: validate that the token can access both repos.
+# ---------------------------------------------------------------------------
+
+# Detect token type for diagnostic context.
+TOKEN_PREFIX="${TOKEN:0:4}"
+case "$TOKEN_PREFIX" in
+  ghs_) TOKEN_TYPE="GitHub App installation token" ;;
+  ghp_) TOKEN_TYPE="classic personal access token" ;;
+  gith) TOKEN_TYPE="fine-grained personal access token" ;;
+  *)    TOKEN_TYPE="unknown token type (prefix: ${TOKEN_PREFIX})" ;;
+esac
+
+echo "Validating access to repositories (using ${TOKEN_TYPE})..."
+
+for REPO_SLUG in "$PRIVATE_REPO" "$PUBLIC_REPO"; do
+  # The 'if' suppresses set -e so we can capture the error.
+  if ! REPO_RESPONSE=$(gh api "/repos/${REPO_SLUG}" 2>&1); then
+    echo "" >&2
+    echo "ERROR: Cannot access '${REPO_SLUG}'." >&2
+    echo "" >&2
+    echo "  gh error: ${REPO_RESPONSE}" >&2
+    echo "" >&2
+    echo "Possible causes:" >&2
+    echo "  - The repository '${REPO_SLUG}' does not exist." >&2
+    echo "  - The token does not have access to this repository." >&2
+    case "$TOKEN_TYPE" in
+      "GitHub App installation token")
+        echo "  - The GitHub App may not be installed on the '${REPO_SLUG%%/*}' org/user." >&2
+        echo "  - The installation may not have '${REPO_SLUG#*/}' in its selected repositories." >&2
+        ;;
+      "fine-grained personal access token")
+        echo "  - The PAT may not include '${REPO_SLUG}' in its repository scope." >&2
+        ;;
+    esac
+    echo "" >&2
+    echo "Required token permissions: contents:write, pull_requests:write, workflows:write" >&2
+    exit 1
+  fi
+done
+
 # Use the private repo's default branch for both repos.
 DEFAULT_BRANCH=$(gh api "/repos/${PRIVATE_REPO}" --jq '.default_branch')
 

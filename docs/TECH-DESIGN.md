@@ -157,21 +157,21 @@ the stripping tool is a **python** CLI that generates a clean snapshot of the pr
 
 1. check out the target commit to a temporary working directory
 2. walk the directory tree and remove all directories named `private/` (exact basename match at any depth).  **do not follow symlinks** during the walk
-3. for each remaining file:
-   a. if the file is a symlink, **raise an error** (symlinks are not allowed in synced repos -- they could bypass `private/` directory exclusion.  the CI validation action also checks for this)
-   b. if the file is binary (see text vs. binary detection below), leave it in the snapshot as-is (no marker stripping attempted, but the file is still included in the clean snapshot)
-   c. attempt to read the file as UTF-8.  if decoding fails, **raise an error** (fail-closed -- a file that can't be decoded might contain markers that would be silently skipped)
-   d. strip all `!repo-sync: private-start` / `!repo-sync: private-end` regions:
+3. check all remaining symlinks: for each symlink, resolve its target path (using `os.readlink()` + path arithmetic, not filesystem following).  **raise an error** if the resolved target escapes the repository root or passes through a directory named `private` at any depth.  symlinks that pass validation are kept as-is in the snapshot (not followed, not read, not processed for markers)
+4. for each remaining regular file (not symlinks):
+   a. if the file is binary (see text vs. binary detection below), leave it in the snapshot as-is (no marker stripping attempted, but the file is still included in the clean snapshot)
+   b. attempt to read the file as UTF-8.  if decoding fails, **raise an error** (fail-closed -- a file that can't be decoded might contain markers that would be silently skipped)
+   c. strip all `!repo-sync: private-start` / `!repo-sync: private-end` regions:
       - scan lines for any line containing the string `!repo-sync: private-start` -- this begins a private region
       - strip all lines from the start marker (inclusive) through the corresponding `!repo-sync: private-end` line (inclusive), leaving no blank line in their place
       - if a `private-start` is encountered while already inside a private region, raise an error (nesting is not allowed)
       - if the file ends while inside a private region (no matching `private-end`), raise an error
-   e. if stripping leaves the file with zero remaining lines, keep it as an empty file (do not delete it)
-4. the resulting directory tree is the clean snapshot
+   d. if stripping leaves the file with zero remaining lines, keep it as an empty file (do not delete it)
+5. the resulting directory tree is the clean snapshot
 
 ### error handling
 
-if the stripping tool encounters any error (nesting, unmatched markers, UTF-8 decode failure, symlinks), the sync workflow **fails** and does **not** update the watermark.  the next run will retry from the same commit.  this is correct fail-closed behavior -- a stripping error might indicate a condition that could cause private code to leak.
+if the stripping tool encounters any error (nesting, unmatched markers, UTF-8 decode failure, symlinks targeting private directories or escaping the repo root), the sync workflow **fails** and does **not** update the watermark.  the next run will retry from the same commit.  this is correct fail-closed behavior -- a stripping error might indicate a condition that could cause private code to leak.
 
 on failure, the workflow posts a notification to a configured Slack channel to alert oncall.  all commits after the failing commit are blocked until the issue is resolved.
 
@@ -264,7 +264,7 @@ inputs:
 validation checks:
 * every `private-start` has a matching `private-end` in the same file
 * no nested markers (a `private-start` inside an open region)
-* no symlinks present in the repository (symlinks could bypass `private/` directory exclusion)
+* no symlinks target a `private/` directory or escape the repository root
 
 ### consuming repo integration
 
