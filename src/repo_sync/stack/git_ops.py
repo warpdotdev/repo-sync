@@ -164,21 +164,46 @@ class GitOps:
         return []
 
     def archive_to_dir(self, ref: str, target_dir: str) -> None:
-        """Extract the tree at a ref into a directory via git archive."""
+        """Extract the tree at a ref into a directory via git archive.
+
+        Streams the tar output directly into extraction so the full archive
+        is never buffered in memory.
+        """
         import tarfile
-        import io
-        result = subprocess.run(
+        import logging
+
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        proc = subprocess.Popen(
             ["git", "archive", ref],
             cwd=self.repo_dir,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
         )
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                result.returncode, ["git", "archive", ref],
-                result.stdout, result.stderr,
+        try:
+            with tarfile.open(fileobj=proc.stdout, mode="r|*") as tar:
+                tar.extractall(path=target_dir)
+        except tarfile.ReadError:
+            # If git archive failed, the stream may be empty or truncated.
+            # Fall through to the returncode check below.
+            pass
+        finally:
+            proc.stdout.close()
+
+        stderr = proc.stderr.read()
+        proc.stderr.close()
+        proc.wait()
+
+        if proc.returncode != 0:
+            logger = logging.getLogger(__name__)
+            logger.error(
+                "git archive %s failed (exit %d): %s",
+                ref, proc.returncode, stderr.decode(errors="replace").strip(),
             )
-        with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
-            tar.extractall(path=target_dir)
+            raise subprocess.CalledProcessError(
+                proc.returncode, ["git", "archive", ref],
+                b"", stderr,
+            )
 
     def checkout_force_branch(
         self, branch: str, start_point: str | None = None
