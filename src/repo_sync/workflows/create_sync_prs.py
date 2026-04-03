@@ -277,8 +277,7 @@ def _push_branch(
     sync_branch: str,
 ) -> None:
     """Push the sync branch.  Force-pushes if it already exists on the remote."""
-    remote_ref = peer_gh.get_branch_ref_sha(sync_branch)
-    if remote_ref:
+    if peer_gh.branch_exists_on_remote(sync_branch):
         logger.warning(
             "Branch %s already exists on remote. Force-pushing.", sync_branch
         )
@@ -330,6 +329,7 @@ def _sync_private_to_public(
     Raises TransientSyncError on base-branch-deleted failures.
     """
     # Create the diff repo with consecutive clean snapshots.
+    logger.info("Creating clean diff for %s...", short_sha)
     diff_result = _create_diff_repo(
         source_git, source_sha, short_sha, slack_webhook_url, source_repo,
     )
