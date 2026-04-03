@@ -244,13 +244,13 @@ def _create_diff_repo(
     diff_git._run(["config", "user.email", "270220925+warp-repo-sync[bot]@users.noreply.github.com"])
 
     # Commit the previous snapshot.
-    shutil.copytree(prev_snapshot_dir, diff_repo, dirs_exist_ok=True)
+    shutil.copytree(prev_snapshot_dir, diff_repo, dirs_exist_ok=True, symlinks=True)
     diff_git.add_all()
     diff_git.commit("prev", allow_empty=True)
 
     # Replace with the current snapshot.
     diff_git.rm_tracked_files()
-    shutil.copytree(snapshot_dir, diff_repo, dirs_exist_ok=True)
+    shutil.copytree(snapshot_dir, diff_repo, dirs_exist_ok=True, symlinks=True)
     diff_git.add_all()
     diff_git.commit("curr", allow_empty=True)
 
