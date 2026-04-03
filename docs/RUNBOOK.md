@@ -127,12 +127,11 @@ the target repo's squash merge settings did not preserve the PR description in t
    ```sh
    TREE_SHA=$(gh api repos/<owner>/<repo>/commits/<merge-sha> --jq '.commit.tree.sha')
    ```
-4. create a new commit object with the correct trailer via the GitHub API:
+4. create a new commit object with the correct trailer via the GitHub API.  note: the message must be defined separately to avoid zsh `cmdsubst>` issues with literal newlines inside `$()`:
    ```sh
+   MSG=$'repo-sync: watermark recovery for PR #<pr-number>\n\nRepo-Sync-Origin: <source-repo>@<source-sha>'
    NEW_COMMIT=$(gh api repos/<owner>/<repo>/git/commits \
-     -f "message=repo-sync: watermark recovery for PR #<pr-number>
-
-   Repo-Sync-Origin: <source-repo>@<source-sha>" \
+     -f "message=$MSG" \
      -f "tree=$TREE_SHA" \
      -f "parents[]=<merge-sha>" \
      --jq '.sha')
