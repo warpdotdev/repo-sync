@@ -363,7 +363,20 @@ def _sync_private_to_public(
                 peer_git.cherry_pick_abort()
                 return False
 
-            # Real conflict.
+            # Real conflict.  Log diagnostics before aborting.
+            logger.error(
+                "Cherry-pick failed for %s. returncode=%d\n"
+                "stdout: %s\nstderr: %s\nconflicting files: %s",
+                short_sha, cp_result.returncode,
+                cp_result.stdout, cp_result.stderr, conflicting,
+            )
+            diff_stat = peer_git._run(
+                ["diff", "--stat", "--cached"], check=False,
+            )
+            logger.error(
+                "Staged diff stat at time of conflict:\n%s",
+                diff_stat.stdout,
+            )
             peer_git.cherry_pick_abort()
             msg = (
                 f"repo-sync: clean delta cherry-pick failed for {source_sha} "
@@ -437,6 +450,13 @@ def _sync_public_to_private(
     # Cherry-pick the public commit.
     cp_result = peer_git.cherry_pick(source_sha, allow_empty=True, x=True)
     if not cp_result.success:
+        conflicting = peer_git.conflicting_files()
+        logger.error(
+            "Cherry-pick failed for %s. returncode=%d\n"
+            "stdout: %s\nstderr: %s\nconflicting files: %s",
+            short_sha, cp_result.returncode,
+            cp_result.stdout, cp_result.stderr, conflicting,
+        )
         peer_git.cherry_pick_abort()
         msg = (
             f"repo-sync: cherry-pick failed for {short_sha} "
