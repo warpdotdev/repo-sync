@@ -106,6 +106,54 @@ if merging pending sync PRs doesn't resolve the issue:
 - the idempotency guard ensures manual intervention does not conflict with automation
 - merging pending public-to-private sync PRs is usually sufficient to unblock the pipeline
 
+## missing Repo-Sync-Origin trailer on merge commit
+
+### symptoms
+
+the restack workflow fails after a sync PR is merged.  the error reads: `Merge commit <sha> has no Repo-Sync-Origin trailer. Cannot update watermark.`  the watermark does not advance, so subsequent syncs in that direction are blocked.
+
+### cause
+
+the target repo's squash merge settings did not preserve the PR description in the commit message.  the `Repo-Sync-Origin` trailer is in the PR body, but the squash commit only includes the title (and possibly co-author lines).  this can also happen if someone manually edits the commit message during merge and removes the trailer.
+
+### remediation
+
+1. find the merged PR and confirm the trailer is in the PR body:
+   ```sh
+   gh api repos/<owner>/<repo>/pulls/<pr-number> --jq '.body'
+   ```
+2. extract the source repo and SHA from the trailer (format: `Repo-Sync-Origin: <source-repo>@<source-sha>`).
+3. get the tree SHA from the merge commit:
+   ```sh
+   TREE_SHA=$(gh api repos/<owner>/<repo>/commits/<merge-sha> --jq '.commit.tree.sha')
+   ```
+4. create a new commit object with the correct trailer via the GitHub API:
+   ```sh
+   NEW_COMMIT=$(gh api repos/<owner>/<repo>/git/commits \
+     -f "message=repo-sync: watermark recovery for PR #<pr-number>
+
+   Repo-Sync-Origin: <source-repo>@<source-sha>" \
+     -f "tree=$TREE_SHA" \
+     -f "parents[]=<merge-sha>" \
+     --jq '.sha')
+   ```
+5. update the watermark tag to point to the new commit:
+   ```sh
+   gh api -X PATCH repos/<owner>/<repo>/git/refs/tags/repo-sync/watermark/<direction> \
+     -f "sha=$NEW_COMMIT" \
+     -F "force=true"
+   ```
+6. verify the watermark reads correctly:
+   ```sh
+   gh api repos/<owner>/<repo>/git/ref/tags/repo-sync/watermark/<direction> --jq '.object.sha'
+   ```
+
+the new commit is a dangling object (not on any branch) whose sole purpose is to carry the trailer for the watermark.  it does not affect git history.
+
+### prevention
+
+ensure the target repo's merge settings preserve the PR description in the squash commit message.  in GitHub: Settings → Pull Requests → verify that the default squash merge commit message includes the PR body.
+
 ## stripping tool failure
 
 ### symptoms
