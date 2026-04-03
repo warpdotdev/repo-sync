@@ -163,15 +163,7 @@ fi
 cp -a "${SNAPSHOT_DIR}/." .
 git add -A
 
-# Check if there are any changes to commit.
-if git diff --cached --quiet; then
-  echo "No changes -- the public repo already matches the clean snapshot."
-  popd > /dev/null
-  rm -rf "$SNAPSHOT_DIR" "$WORK_DIR"
-  exit 0
-fi
-
-git commit -m "repo-sync: initial sync from private repo
+git commit --allow-empty -m "repo-sync: initial sync from private repo
 
 Repo-Sync-Origin: ${PRIVATE_REPO}@${HEAD_SHA}"
 
