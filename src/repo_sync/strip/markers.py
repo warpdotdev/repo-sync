@@ -9,10 +9,16 @@ from __future__ import annotations
 
 PRIVATE_START = "!repo-sync: private-start"
 PRIVATE_END = "!repo-sync: private-end"
+PRIVATE_FILE = "!repo-sync: private-file"
 
 
 class MarkerError(Exception):
     """Raised when marker validation fails."""
+
+
+def has_private_file_marker(lines: list[str]) -> bool:
+    """Return True if any line contains the whole-file private marker."""
+    return any(PRIVATE_FILE in line for line in lines)
 
 
 def validate_markers(lines: list[str], *, filepath: str = "<unknown>") -> list[str]:
@@ -59,6 +65,14 @@ def validate_markers(lines: list[str], *, filepath: str = "<unknown>") -> list[s
         errors.append(
             f"{filepath}: unterminated private-start opened at line {start_line}"
         )
+
+    # A file with the private-file marker must not also have region markers.
+    if has_private_file_marker(lines):
+        if any(PRIVATE_START in line or PRIVATE_END in line for line in lines):
+            errors.append(
+                f"{filepath}: private-file marker cannot be combined with "
+                "private-start/private-end region markers"
+            )
 
     return errors
 

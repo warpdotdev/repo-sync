@@ -6,6 +6,7 @@ import pytest
 
 from repo_sync.strip.markers import (
     MarkerError,
+    has_private_file_marker,
     strip_private_regions,
     validate_markers,
 )
@@ -160,6 +161,35 @@ class TestStripPrivateRegions:
 
 
 # ---------------------------------------------------------------------------
+# Whole-file private marker
+# ---------------------------------------------------------------------------
+
+
+class TestHasPrivateFileMarker:
+    """Tests for has_private_file_marker()."""
+
+    def test_marker_present(self) -> None:
+        """Returns True when a line contains the private-file marker."""
+        lines = ["# !repo-sync: private-file\n", "name: my-workflow\n"]
+        assert has_private_file_marker(lines) is True
+
+    def test_marker_absent(self) -> None:
+        """Returns False when no line contains the private-file marker."""
+        lines = ["public line 1\n", "public line 2\n"]
+        assert has_private_file_marker(lines) is False
+
+    def test_empty_file(self) -> None:
+        """Returns False for an empty file."""
+        assert has_private_file_marker([]) is False
+
+    def test_marker_with_comment_prefix(self) -> None:
+        """Detects the marker regardless of comment syntax prefix."""
+        for prefix in ["# ", "// ", "/* ", "-- ", "    # "]:
+            lines = [f"{prefix}!repo-sync: private-file\n"]
+            assert has_private_file_marker(lines) is True
+
+
+# ---------------------------------------------------------------------------
 # Marker validation -- error cases
 # ---------------------------------------------------------------------------
 
@@ -231,6 +261,32 @@ class TestValidateMarkers:
         errors = validate_markers(lines, filepath="test.rs")
         assert len(errors) == 1
         assert "both" in errors[0]
+
+    def test_private_file_alone_no_errors(self) -> None:
+        """A file with only the private-file marker produces no errors."""
+        lines = ["# !repo-sync: private-file\n", "content\n"]
+        assert validate_markers(lines) == []
+
+    def test_private_file_with_region_markers_errors(self) -> None:
+        """private-file combined with region markers is an error."""
+        lines = [
+            "# !repo-sync: private-file\n",
+            "# !repo-sync: private-start\n",
+            "private\n",
+            "# !repo-sync: private-end\n",
+        ]
+        errors = validate_markers(lines, filepath="test.yml")
+        assert any("cannot be combined" in e for e in errors)
+
+    def test_private_file_with_start_only_errors(self) -> None:
+        """private-file with an unpaired private-start is an error."""
+        lines = [
+            "# !repo-sync: private-file\n",
+            "# !repo-sync: private-start\n",
+            "content\n",
+        ]
+        errors = validate_markers(lines, filepath="test.yml")
+        assert any("cannot be combined" in e for e in errors)
 
 
 class TestStripPrivateRegionsErrors:

@@ -1,8 +1,9 @@
 """Full-tree stripping logic for repo-sync.
 
-Walks a directory tree, removes ``private/`` directories, detects
-symlinks, classifies files as text or binary, and strips private marker
-regions from text files.
+Walks a directory tree, removes ``private/`` directories, deletes files
+marked with ``!repo-sync: private-file``, detects symlinks, classifies
+files as text or binary, and strips private marker regions from text
+files.
 """
 
 from __future__ import annotations
@@ -13,7 +14,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 from repo_sync.strip.detect import is_binary
-from repo_sync.strip.markers import MarkerError, strip_private_regions, validate_markers
+from repo_sync.strip.markers import (
+    MarkerError,
+    has_private_file_marker,
+    strip_private_regions,
+    validate_markers,
+)
 
 
 class StripResult(NamedTuple):
@@ -170,6 +176,15 @@ def strip_tree(
             errs = validate_markers(lines, filepath=rel)
             errors.extend(errs)
         else:
+            if has_private_file_marker(lines):
+                # The entire file is private.  Validate markers to catch
+                # conflicts with region markers, then delete the file.
+                errs = validate_markers(lines, filepath=rel)
+                if errs:
+                    errors.extend(errs)
+                    continue
+                os.remove(filepath)
+                continue
             try:
                 stripped = strip_private_regions(lines, filepath=rel)
             except MarkerError as exc:

@@ -271,6 +271,80 @@ class TestUtf8Handling:
 
 
 # ---------------------------------------------------------------------------
+# Whole-file private marker (tree level)
+# ---------------------------------------------------------------------------
+
+
+class TestPrivateFileMarker:
+    """Tests for whole-file private marker handling during tree stripping."""
+
+    def test_file_deleted_during_stripping(self, tmp_path: Path) -> None:
+        """A file with the private-file marker is deleted from the snapshot."""
+        _write(tmp_path, "public.txt", "public content\n")
+        _write(
+            tmp_path,
+            ".github/workflows/internal.yml",
+            "# !repo-sync: private-file\nname: internal\n",
+        )
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "public.txt").exists()
+        assert not (tmp_path / ".github" / "workflows" / "internal.yml").exists()
+
+    def test_other_files_unaffected(self, tmp_path: Path) -> None:
+        """Files without the private-file marker are not deleted."""
+        _write(tmp_path, "keep.yml", "name: public\n")
+        _write(tmp_path, "remove.yml", "# !repo-sync: private-file\nname: private\n")
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "keep.yml").exists()
+        assert not (tmp_path / "remove.yml").exists()
+
+    def test_validate_only_no_error(self, tmp_path: Path) -> None:
+        """Validate-only mode accepts a file with only the private-file marker."""
+        _write(tmp_path, "internal.yml", "# !repo-sync: private-file\nname: internal\n")
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert errors == []
+
+    def test_validate_only_does_not_delete(self, tmp_path: Path) -> None:
+        """Validate-only mode does not delete files with the private-file marker."""
+        _write(tmp_path, "internal.yml", "# !repo-sync: private-file\nname: internal\n")
+        strip_tree(str(tmp_path), validate_only=True)
+        assert (tmp_path / "internal.yml").exists()
+
+    def test_combined_with_region_markers_strip_error(self, tmp_path: Path) -> None:
+        """Combining private-file with region markers causes StrippingError."""
+        _write(
+            tmp_path,
+            "bad.yml",
+            "# !repo-sync: private-file\n"
+            "# !repo-sync: private-start\n"
+            "secret\n"
+            "# !repo-sync: private-end\n",
+        )
+        with pytest.raises(StrippingError, match="cannot be combined"):
+            strip_tree(str(tmp_path))
+
+    def test_combined_with_region_markers_validate_error(self, tmp_path: Path) -> None:
+        """Validate-only mode catches private-file + region marker conflicts."""
+        _write(
+            tmp_path,
+            "bad.yml",
+            "# !repo-sync: private-file\n"
+            "# !repo-sync: private-start\n"
+            "secret\n"
+            "# !repo-sync: private-end\n",
+        )
+        errors = strip_tree(str(tmp_path), validate_only=True).errors
+        assert any("cannot be combined" in e for e in errors)
+
+    def test_binary_file_with_marker_bytes_unaffected(self, tmp_path: Path) -> None:
+        """A binary file containing the marker string is not deleted."""
+        marker_bytes = b"\x00" + b"!repo-sync: private-file"
+        _write(tmp_path, "data.bin", marker_bytes)
+        strip_tree(str(tmp_path))
+        assert (tmp_path / "data.bin").exists()
+
+
+# ---------------------------------------------------------------------------
 # Full tree stripping (integration)
 # ---------------------------------------------------------------------------
 
@@ -338,6 +412,27 @@ class TestStripTreeIntegration:
         strip_tree(str(tmp_path))
         assert p.stat().st_mode & 0o777 == 0o755
         assert p.read_text(encoding="utf-8") == "#!/bin/bash\npublic\n"
+
+    def test_mixed_with_private_file_marker(self, tmp_path: Path) -> None:
+        """A tree with private dirs, private-file files, and region markers is cleaned correctly."""
+        _write(tmp_path, "private/secret.rs", "secret")
+        _write(
+            tmp_path,
+            ".github/workflows/internal.yml",
+            "# !repo-sync: private-file\nname: internal\n",
+        )
+        _write(
+            tmp_path,
+            "lib.rs",
+            "pub\n// !repo-sync: private-start\npriv\n// !repo-sync: private-end\npub2\n",
+        )
+        _write(tmp_path, "public.yml", "name: public\n")
+        strip_tree(str(tmp_path))
+
+        assert not (tmp_path / "private").exists()
+        assert not (tmp_path / ".github" / "workflows" / "internal.yml").exists()
+        assert (tmp_path / "lib.rs").read_text(encoding="utf-8") == "pub\npub2\n"
+        assert (tmp_path / "public.yml").exists()
 
 
 # ---------------------------------------------------------------------------
