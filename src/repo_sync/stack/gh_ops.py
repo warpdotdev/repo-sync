@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from urllib.parse import quote
 
 from repo_sync.stack.constants import SYNC_BRANCH_PREFIX
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,12 +50,20 @@ class GhOps:
             text=True,
             env=env,
         )
-        if check and result.returncode != 0:
-            raise subprocess.CalledProcessError(
+        if result.returncode != 0:
+            if check:
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    ["gh", *args],
+                    result.stdout,
+                    result.stderr,
+                )
+            # Log failures that are silently ignored so they show up in CI.
+            logger.warning(
+                "gh %s failed (rc=%d): %s",
+                " ".join(args),
                 result.returncode,
-                ["gh", *args],
-                result.stdout,
-                result.stderr,
+                result.stderr.strip(),
             )
         return result.stdout.strip()
 
