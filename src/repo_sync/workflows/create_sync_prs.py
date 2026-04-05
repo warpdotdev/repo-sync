@@ -12,6 +12,7 @@ restarts safe.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -46,6 +47,20 @@ class PermanentSyncError(Exception):
     """Raised when a permanent failure occurs that should stop the workflow."""
 
     pass
+
+
+@dataclass
+class _PrDescriptionCache:
+    """Mutable cache for the last generated PR description.
+
+    Populated before creating the PR so that the description survives a
+    TransientSyncError and can be reused on retry instead of re-running
+    the expensive PR description agent.
+    """
+
+    source_sha: str | None = None
+    title: str = ""
+    body: str = ""
 
 
 def _notify_slack(webhook_url: str, message: str) -> None:
@@ -320,6 +335,7 @@ def _sync_private_to_public(
     stack_base_branch: str,
     source_repo: str,
     slack_webhook_url: str,
+    pr_desc_cache: _PrDescriptionCache,
 ) -> bool:
     """Handle private-to-public sync for a single commit.
 
@@ -389,18 +405,31 @@ def _sync_private_to_public(
         trailer = f"Repo-Sync-Origin: {source_repo}@{source_sha}"
         peer_git.commit_amend_message("repo-sync: sync from private", trailer)
 
-        # PR description agent.
-        fallback = private_to_public_fallback(short_sha)
-        pr_title = fallback.title
-        pr_body = fallback.body
+        # PR description: reuse cached result if retrying the same commit.
+        if pr_desc_cache.source_sha == source_sha:
+            logger.info(
+                "Reusing cached PR description for %s.", short_sha,
+            )
+            pr_title = pr_desc_cache.title
+            pr_body = pr_desc_cache.body
+        else:
+            fallback = private_to_public_fallback(short_sha)
+            pr_title = fallback.title
+            pr_body = fallback.body
 
-        agent_title, agent_body = _run_pr_description_agent(
-            snapshot_dir, patch_file, short_sha,
-        )
-        if agent_title:
-            pr_title = agent_title
-        if agent_body:
-            pr_body = agent_body
+            agent_title, agent_body = _run_pr_description_agent(
+                snapshot_dir, patch_file, short_sha,
+            )
+            if agent_title:
+                pr_title = agent_title
+            if agent_body:
+                pr_body = agent_body
+
+        # Cache the description before the PR creation step, which may
+        # raise TransientSyncError.
+        pr_desc_cache.source_sha = source_sha
+        pr_desc_cache.title = pr_title
+        pr_desc_cache.body = pr_body
 
         pr_body = f"{pr_body}\n\nRepo-Sync-Origin: {source_repo}@{source_sha}"
 
@@ -514,6 +543,7 @@ def create_sync_prs(
     the per-commit idempotency guard.
     """
     last_failure_sha = ""
+    pr_desc_cache = _PrDescriptionCache()
 
     while True:
         stack_base_branch = stack_top or default_branch
@@ -548,6 +578,7 @@ def create_sync_prs(
                         stack_base_branch=stack_base_branch,
                         source_repo=source_repo,
                         slack_webhook_url=slack_webhook_url,
+                        pr_desc_cache=pr_desc_cache,
                     )
                 else:
                     created = _sync_public_to_private(
