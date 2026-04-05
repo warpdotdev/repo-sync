@@ -161,12 +161,13 @@ the stripping tool is a **python** CLI that generates a clean snapshot of the pr
 4. for each remaining regular file (not symlinks):
    a. if the file is binary (see text vs. binary detection below), leave it in the snapshot as-is (no marker stripping attempted, but the file is still included in the clean snapshot)
    b. attempt to read the file as UTF-8.  if decoding fails, **raise an error** (fail-closed -- a file that can't be decoded might contain markers that would be silently skipped)
-   c. strip all `!repo-sync: private-start` / `!repo-sync: private-end` regions:
+   c. if any line contains the string `!repo-sync: private-file`, delete the entire file from the snapshot.  if the file also contains `!repo-sync: private-start` or `!repo-sync: private-end` markers, raise an error (combining whole-file and region markers is not allowed)
+   d. strip all `!repo-sync: private-start` / `!repo-sync: private-end` regions:
       - scan lines for any line containing the string `!repo-sync: private-start` -- this begins a private region
       - strip all lines from the start marker (inclusive) through the corresponding `!repo-sync: private-end` line (inclusive), leaving no blank line in their place
       - if a `private-start` is encountered while already inside a private region, raise an error (nesting is not allowed)
       - if the file ends while inside a private region (no matching `private-end`), raise an error
-   d. if stripping leaves the file with zero remaining lines, keep it as an empty file (do not delete it)
+   e. if stripping leaves the file with zero remaining lines, keep it as an empty file (do not delete it)
 5. the resulting directory tree is the clean snapshot
 
 ### error handling
@@ -177,7 +178,7 @@ on failure, the workflow posts a notification to a configured Slack channel to a
 
 ### marker matching
 
-markers are matched via simple substring search: any line containing `!repo-sync: private-start` or `!repo-sync: private-end` is treated as a marker, regardless of surrounding content (comment syntax, whitespace, etc.).  developers are trusted to use markers sensibly.
+markers are matched via simple substring search: any line containing `!repo-sync: private-start`, `!repo-sync: private-end`, or `!repo-sync: private-file` is treated as a marker, regardless of surrounding content (comment syntax, whitespace, etc.).  developers are trusted to use markers sensibly.
 
 ### text vs. binary detection
 
@@ -264,6 +265,7 @@ inputs:
 validation checks:
 * every `private-start` has a matching `private-end` in the same file
 * no nested markers (a `private-start` inside an open region)
+* no `private-file` marker combined with `private-start`/`private-end` in the same file
 * no symlinks target a `private/` directory or escape the repository root
 
 ### consuming repo integration
