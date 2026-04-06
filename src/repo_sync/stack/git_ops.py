@@ -280,7 +280,23 @@ class GitOps:
     def diff_patch(self, ref_a: str, ref_b: str) -> str:
         """Generate a text diff between two refs.
 
-        Binary files are summarized with a one-line "differ" notice rather
-        than included verbatim, keeping the output valid UTF-8.
+        The output is decoded with ``errors="replace"`` because diffed
+        files may contain non-UTF-8 content.  This is acceptable since
+        the patch is only used for human-readable description generation,
+        not for applying.
         """
-        return self._run(["diff", ref_a, ref_b]).stdout
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        result = subprocess.run(
+            ["git", "diff", ref_a, ref_b],
+            cwd=self.repo_dir,
+            capture_output=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                ["git", "diff", ref_a, ref_b],
+                result.stdout,
+                result.stderr,
+            )
+        return result.stdout.decode("utf-8", errors="replace").strip()
