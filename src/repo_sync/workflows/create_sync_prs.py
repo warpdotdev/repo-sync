@@ -278,7 +278,7 @@ def _create_diff_repo(
 
     # Generate the patch for the PR description agent.
     patch_file = f"/tmp/patch-{short_sha}.patch"
-    patch_content = diff_git.diff_binary_patch("HEAD~1", "HEAD")
+    patch_content = diff_git.diff_patch("HEAD~1", "HEAD")
     with open(patch_file, "w") as f:
         f.write(patch_content)
 

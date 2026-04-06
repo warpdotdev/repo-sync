@@ -49,6 +49,7 @@ class GitOps:
             stderr=result.stderr.strip(),
         )
 
+
     def rev_parse(self, ref: str) -> str:
         """Resolve a ref to a full SHA."""
         return self._run(["rev-parse", ref]).stdout
@@ -276,6 +277,10 @@ class GitOps:
             return []
         return result.stdout.splitlines()
 
-    def diff_binary_patch(self, ref_a: str, ref_b: str) -> str:
-        """Generate a binary diff patch between two refs."""
-        return self._run(["diff", "--binary", ref_a, ref_b]).stdout
+    def diff_patch(self, ref_a: str, ref_b: str) -> str:
+        """Generate a text diff between two refs.
+
+        Binary files are summarized with a one-line "differ" notice rather
+        than included verbatim, keeping the output valid UTF-8.
+        """
+        return self._run(["diff", ref_a, ref_b]).stdout
