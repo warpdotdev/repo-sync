@@ -49,6 +49,11 @@ jobs:
       escalate_to: "@oncall-client-primary"
       app_id: ${{ vars.REPO_SYNC_APP_ID }}
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
+      # Fixup scripts run after stripping (private-to-public) or after
+      # cherry-pick (public-to-private).  The script receives the working
+      # directory as its sole argument and must exit 0 on success.
+      # private_to_public_fixup_script: scripts/post-strip-fixup.sh
+      # public_to_private_fixup_script: scripts/post-cherry-pick-fixup.sh
     secrets:
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
 

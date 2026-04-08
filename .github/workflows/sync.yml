@@ -25,6 +25,16 @@ on:
         required: false
         type: string
         default: ""
+      private_to_public_fixup_script:
+        description: "Optional script to run after stripping for private-to-public sync. Receives the snapshot directory as its sole argument."
+        required: false
+        type: string
+        default: ""
+      public_to_private_fixup_script:
+        description: "Optional script to run after cherry-pick for public-to-private sync (not yet implemented). Receives the working directory as its sole argument."
+        required: false
+        type: string
+        default: ""
       app_id:
         description: "GitHub App ID."
         required: true
@@ -108,6 +118,8 @@ jobs:
             --public-repo "${{ inputs.public_repo }}" \
             --private-repo "${{ inputs.private_repo }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
-            --slack-webhook-url "${{ inputs.slack_webhook_url }}"
+            --slack-webhook-url "${{ inputs.slack_webhook_url }}" \
+            --private-to-public-fixup-script "${{ inputs.private_to_public_fixup_script }}" \
+            --public-to-private-fixup-script "${{ inputs.public_to_private_fixup_script }}"
         env:
           WARP_API_KEY: ${{ secrets.warp_api_key }}
