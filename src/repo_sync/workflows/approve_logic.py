@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
-from repo_sync.stack.trailers import parse_origin
+from repo_sync.stack.trailers import parse_conflict, parse_origin
 from repo_sync.workflows.sync import determine_sync_reviewer
 
 logger = logging.getLogger(__name__)
@@ -249,6 +249,20 @@ def run_approve(
     """
     # Step 1: Already handled?
     if check_already_handled(gh, repo, pr_number):
+        return
+
+    # Step 1b: Conflict trailer check.  PRs created by the sync workflow
+    # with a Repo-Sync-Conflict trailer unconditionally require human
+    # approval.  The approve bot must never approve these.
+    body = gh._run([
+        "pr", "view", str(pr_number), "--repo", gh.repo,
+        "--json", "body", "--jq", ".body",
+    ], check=False)
+    if body and parse_conflict(body):
+        logger.info(
+            "PR #%d has Repo-Sync-Conflict trailer. "
+            "Human approval required. Skipping.", pr_number,
+        )
         return
 
     # Step 2: Commit count check.

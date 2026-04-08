@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 # Trailer prefixes.
 _ORIGIN_PREFIX = "Repo-Sync-Origin:"
 _ASSIGNED_PREFIX = "Repo-Sync-Assigned:"
+_CONFLICT_PREFIX = "Repo-Sync-Conflict:"
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,22 @@ def parse_assigned(text: str) -> SyncAssignment | None:
 def format_origin_trailer(repo: str, sha: str) -> str:
     """Format a Repo-Sync-Origin trailer line."""
     return f"{_ORIGIN_PREFIX} {repo}@{sha}"
+
+
+def parse_conflict(text: str) -> bool:
+    """Check if the text contains a Repo-Sync-Conflict trailer.
+
+    Returns True if the trailer is present.
+    """
+    for line in text.splitlines():
+        if line.strip().startswith(_CONFLICT_PREFIX):
+            return True
+    return False
+
+
+def format_conflict_trailer() -> str:
+    """Format a Repo-Sync-Conflict trailer line."""
+    return f"{_CONFLICT_PREFIX} cherry-pick"
 
 
 def format_assigned_trailer(username: str, timestamp: datetime) -> str:

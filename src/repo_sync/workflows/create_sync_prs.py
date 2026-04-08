@@ -23,12 +23,20 @@ import tempfile
 import threading
 import time
 
+from datetime import datetime, timezone
+
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
-from repo_sync.stack.trailers import SyncOrigin
+from repo_sync.stack.trailers import (
+    SyncOrigin,
+    append_trailer,
+    format_assigned_trailer,
+    format_conflict_trailer,
+)
 from repo_sync.workflows.descriptions import parse_agent_output, private_to_public_fallback
 from repo_sync.workflows.sync import (
     build_public_to_private_description,
+    determine_sync_reviewer,
     enumerate_unsynced_commits,
     find_existing_stack_top,
     read_watermark_from_peer,
@@ -327,6 +335,21 @@ def _create_diff_repo(
     return snapshot_dir, prev_snapshot_dir, diff_repo, patch_file, diff_commit
 
 
+def _pr_number_from_url(url: str) -> int | None:
+    """Extract a PR number from a GitHub PR URL.
+
+    Expected format: https://github.com/<owner>/<repo>/pull/<number>
+    Returns None if the URL does not match.
+    """
+    try:
+        parts = url.rstrip("/").split("/")
+        if len(parts) >= 2 and parts[-2] == "pull":
+            return int(parts[-1])
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
 def _push_branch(
     peer_gh: GhOps,
     peer_git: GitOps,
@@ -348,10 +371,13 @@ def _create_pr(
     stack_base_branch: str,
     pr_title: str,
     pr_body: str,
-) -> None:
-    """Create a PR.  Raises TransientSyncError if the base branch was deleted."""
+) -> str:
+    """Create a PR and return its URL.
+
+    Raises TransientSyncError if the base branch was deleted.
+    """
     try:
-        peer_gh.create_pr_simple(
+        return peer_gh.create_pr_simple(
             head=sync_branch,
             base=stack_base_branch,
             title=pr_title,
@@ -366,6 +392,115 @@ def _create_pr(
         raise
 
 
+def _handle_cherry_pick_conflict(
+    peer_git: GitOps,
+    peer_gh: GhOps,
+    short_sha: str,
+    source_sha: str,
+    source_repo: str,
+    sync_branch: str,
+    stack_base_branch: str,
+    commit_message: str,
+    pr_title: str,
+    pr_body: str,
+    slack_webhook_url: str,
+    escalate_to: str,
+) -> None:
+    """Handle a cherry-pick conflict by creating a conflict PR.
+
+    Commits the raw conflict state (with markers or modify/delete artifacts),
+    optionally invokes the conflict-resolution agent to add a resolution
+    commit on top, then creates the PR with appropriate trailers and labels.
+    """
+    # Step 1: Commit the raw conflict as-is.
+    origin_trailer = f"Repo-Sync-Origin: {source_repo}@{source_sha}"
+    peer_git.add_all()
+    peer_git.commit(commit_message, trailers=[origin_trailer])
+
+    # Step 2: Invoke the conflict-resolution agent to produce a separate
+    # resolution commit on top.  The agent runs in Docker and sees the
+    # committed conflict markers (case 2 in the skill).
+    from repo_sync.workflows.agent import run_conflict_resolution_agent
+
+    agent_succeeded = run_conflict_resolution_agent(
+        repo_dir=peer_git.repo_dir,
+        context=f"Cherry-pick conflict on branch {sync_branch}.",
+    )
+    if agent_succeeded:
+        logger.info("Agent produced a resolution commit for %s.", short_sha)
+    else:
+        logger.warning(
+            "Agent did not resolve conflicts for %s. "
+            "PR will contain raw conflict markers.", short_sha,
+        )
+
+    # Step 3: Push and create the PR.
+    conflict_trailer = format_conflict_trailer()
+    pr_body = append_trailer(pr_body, origin_trailer)
+    pr_body = append_trailer(pr_body, conflict_trailer)
+
+    _push_branch(peer_gh, peer_git, sync_branch)
+    pr_url = _create_pr(
+        peer_gh, sync_branch, stack_base_branch, pr_title, pr_body,
+    )
+    pr_number = _pr_number_from_url(pr_url)
+
+    if pr_number is None:
+        logger.error(
+            "Could not extract PR number from URL: %s. "
+            "Skipping label and reviewer assignment.", pr_url,
+        )
+        return
+
+    # Step 4: Add conflict label.
+    peer_gh._run(
+        ["label", "create", "repo-sync:conflict",
+         "--color", "D93F0B",
+         "--description", "Sync PR has merge conflicts",
+         "--repo", peer_gh.repo],
+        check=False,
+    )
+    peer_gh._run(
+        ["pr", "edit", str(pr_number), "--repo", peer_gh.repo,
+         "--add-label", "repo-sync:conflict"],
+    )
+
+    # Step 5: Determine and assign reviewer.
+    source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
+    reviewer = determine_sync_reviewer(
+        source_gh=source_gh,
+        source_sha=source_sha,
+        fallback_team=escalate_to,
+    )
+    peer_gh._run(
+        ["pr", "edit", str(pr_number), "--repo", peer_gh.repo,
+         "--add-reviewer", reviewer],
+        check=False,
+    )
+
+    # Step 6: Add Repo-Sync-Assigned trailer to PR body.
+    assigned_trailer = format_assigned_trailer(reviewer, datetime.now(timezone.utc))
+    current_body = peer_gh._run(
+        ["pr", "view", str(pr_number), "--repo", peer_gh.repo,
+         "--json", "body", "--jq", ".body"],
+        check=False,
+    ) or ""
+    updated_body = append_trailer(current_body, assigned_trailer)
+    peer_gh.update_pr_body(pr_number, updated_body)
+
+    logger.info(
+        "Conflict PR #%d created for %s. Reviewer: %s.",
+        pr_number, short_sha, reviewer,
+    )
+
+    # Step 7: Slack notification.
+    msg = (
+        f"repo-sync: cherry-pick conflict for {source_sha[:7]} in "
+        f"{peer_gh.repo}. Conflict PR #{pr_number} created."
+    )
+    _notify_slack(slack_webhook_url, msg)
+
+
 def _sync_private_to_public(
     source_git: GitOps,
     peer_git: GitOps,
@@ -378,12 +513,13 @@ def _sync_private_to_public(
     slack_webhook_url: str,
     pr_desc_cache: _PrDescriptionCache,
     fixup_script: str = "",
+    escalate_to: str = "@oncall-client-primary",
 ) -> bool:
     """Handle private-to-public sync for a single commit.
 
     Returns True if a PR was created, False if the commit was skipped
     (empty diff or empty cherry-pick).
-    Raises PermanentSyncError on stripping/conflict failures.
+    Raises PermanentSyncError on stripping failures.
     Raises TransientSyncError on base-branch-deleted failures.
     """
     # Create the diff repo with consecutive clean snapshots.
@@ -422,7 +558,7 @@ def _sync_private_to_public(
                 peer_git.cherry_pick_abort()
                 return False
 
-            # Real conflict.  Log diagnostics before aborting.
+            # Real conflict.  Log diagnostics and create a conflict PR.
             logger.error(
                 "Cherry-pick failed for %s. returncode=%d\n"
                 "stdout: %s\nstderr: %s\nconflicting files: %s",
@@ -436,13 +572,27 @@ def _sync_private_to_public(
                 "Staged diff stat at time of conflict:\n%s",
                 diff_stat.stdout,
             )
-            peer_git.cherry_pick_abort()
-            msg = (
-                f"repo-sync: clean delta cherry-pick failed for {source_sha} "
-                f"in {source_repo}. See RUNBOOK.md."
+
+            # Build the PR description before creating the conflict PR.
+            fallback = private_to_public_fallback(short_sha)
+            pr_title = f"[CONFLICT] {fallback.title}"
+            pr_body = fallback.body
+
+            _handle_cherry_pick_conflict(
+                peer_git=peer_git,
+                peer_gh=peer_gh,
+                short_sha=short_sha,
+                source_sha=source_sha,
+                source_repo=source_repo,
+                sync_branch=sync_branch,
+                stack_base_branch=stack_base_branch,
+                commit_message="repo-sync: sync from private (conflict)",
+                pr_title=pr_title,
+                pr_body=pr_body,
+                slack_webhook_url=slack_webhook_url,
+                escalate_to=escalate_to,
             )
-            _notify_slack(slack_webhook_url, msg)
-            raise PermanentSyncError(msg)
+            return True
 
         # Amend the commit message with a generic message + trailer.
         trailer = f"Repo-Sync-Origin: {source_repo}@{source_sha}"
@@ -498,11 +648,11 @@ def _sync_public_to_private(
     stack_base_branch: str,
     source_repo: str,
     slack_webhook_url: str,
+    escalate_to: str = "@oncall-client-primary",
 ) -> bool:
     """Handle public-to-private sync for a single commit.
 
     Returns True if a PR was created.
-    Raises PermanentSyncError on cherry-pick failures.
     Raises TransientSyncError on base-branch-deleted failures.
     """
     # Add the source repo as a remote.  Use the absolute path because
@@ -529,13 +679,27 @@ def _sync_public_to_private(
             short_sha, cp_result.returncode,
             cp_result.stdout, cp_result.stderr, conflicting,
         )
-        peer_git.cherry_pick_abort()
-        msg = (
-            f"repo-sync: cherry-pick failed for {short_sha} "
-            f"in {source_repo}. See RUNBOOK.md."
+
+        # Build the conflict PR description from the source commit.
+        commit_subject = peer_git._run(
+            ["log", "-1", "--format=%s", source_sha], check=False,
+        ).stdout or "sync"
+
+        _handle_cherry_pick_conflict(
+            peer_git=peer_git,
+            peer_gh=peer_gh,
+            short_sha=short_sha,
+            source_sha=source_sha,
+            source_repo=source_repo,
+            sync_branch=sync_branch,
+            stack_base_branch=stack_base_branch,
+            commit_message=commit_subject,
+            pr_title=f"[CONFLICT] {commit_subject}",
+            pr_body=f"Cherry-pick conflict for `{source_sha[:7]}` from {source_repo}.",
+            slack_webhook_url=slack_webhook_url,
+            escalate_to=escalate_to,
         )
-        _notify_slack(slack_webhook_url, msg)
-        raise PermanentSyncError(msg)
+        return True
 
     # Append Repo-Sync-Origin trailer to the cherry-picked commit.
     current_msg = peer_git.commit_message("HEAD")
@@ -580,6 +744,7 @@ def create_sync_prs(
     stack_top: str | None,
     slack_webhook_url: str = "",
     fixup_script: str = "",
+    escalate_to: str = "@oncall-client-primary",
 ) -> None:
     """Create sync PRs for all unsynced commits.
 
@@ -624,6 +789,7 @@ def create_sync_prs(
                         slack_webhook_url=slack_webhook_url,
                         pr_desc_cache=pr_desc_cache,
                         fixup_script=fixup_script,
+                        escalate_to=escalate_to,
                     )
                 else:
                     created = _sync_public_to_private(
@@ -636,6 +802,7 @@ def create_sync_prs(
                         stack_base_branch=stack_base_branch,
                         source_repo=source_repo,
                         slack_webhook_url=slack_webhook_url,
+                        escalate_to=escalate_to,
                     )
 
                 if created:
@@ -673,6 +840,7 @@ def run_sync(
     slack_webhook_url: str = "",
     private_to_public_fixup_script: str = "",
     public_to_private_fixup_script: str = "",
+    escalate_to: str = "@oncall-client-primary",
 ) -> None:
     """Run the full sync workflow: watermark, commit enumeration, PR creation.
 
@@ -735,4 +903,5 @@ def run_sync(
         stack_top=stack_top,
         slack_webhook_url=slack_webhook_url,
         fixup_script=fixup_script,
+        escalate_to=escalate_to,
     )

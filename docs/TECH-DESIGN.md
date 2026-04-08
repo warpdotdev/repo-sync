@@ -35,19 +35,31 @@ when a workflow run starts, it reads the watermark tag to determine the last-syn
    b. compute the diff between the two clean snapshots by committing both into a temporary git repo.  if the diff is empty, skip (all changes in this commit were internal-only)
    c. check if a PR with head branch `repo-sync/private-to-public/<short-sha>` was previously created (idempotency guard -- prevents duplicates if the workflow crashed and restarted mid-run).  if a MERGED PR exists, skip without updating the stack base.  if an OPEN PR exists, use its branch as the stack base and skip
    d. create a branch `repo-sync/private-to-public/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   e. apply the delta to the public repo by cherry-picking the diff commit from the temporary repo.  cherry-pick uses three-way merge internally, so it handles context mismatches from un-synced public changes gracefully.  if the cherry-pick produces no changes (delta already present in the public repo), skip.  if it conflicts, fail loudly
+   e. apply the delta to the public repo by cherry-picking the diff commit from the temporary repo.  cherry-pick uses three-way merge internally, so it handles context mismatches from un-synced public changes gracefully.  if the cherry-pick produces no changes (delta already present in the public repo), skip.  if it conflicts, create a **conflict PR** (see below)
    f. amend the commit with a generic message (e.g., `"repo-sync: sync from private"`) and the `Repo-Sync-Origin` trailer.  **do not** use the source commit's message, as it could leak private information
    g. push the branch.  if the branch already exists on the remote (from a previous interrupted run where push succeeded but PR creation failed), verify the content matches and skip the push.  hard-fail if the content differs
    h. create a PR with the base set to the previous sync branch (or `main`)
 
 the sync workflow does **not** approve or enable auto-merge on any PRs.  approval is handled by the separate approve workflow when a PR reaches the bottom of the stack.
 
+**cherry-pick conflict PRs:**
+
+when a cherry-pick fails during sync PR creation (either direction), instead of failing the workflow, the sync creates a conflict PR:
+1. commit the raw conflict state as-is (with conflict markers or modify/delete artifacts) using `git add -A` + `git commit`.  this gives reviewers full visibility into the raw conflict
+2. invoke the conflict-resolution agent to produce a **separate resolution commit** on top.  if the agent fails (or is unavailable), the branch is left with just the raw conflict commit
+3. push the branch and create the PR with a `Repo-Sync-Conflict: cherry-pick` trailer, the `repo-sync:conflict` label, and a `Repo-Sync-Assigned` trailer
+4. request review from the person who merged the source PR (or the fallback team)
+5. send a Slack notification with the conflict PR number
+6. continue processing remaining unsynced commits (they stack on top of the conflict branch)
+
+the `Repo-Sync-Conflict` trailer is a structural guarantee: the approve workflow checks for it and **never** approves a PR with this trailer.  conflict PRs unconditionally require human approval, regardless of mergeability state.  this ensures no conflict PR is auto-merged without human review.
+
 **public-to-private:**
 1. identify unsynced commits on the public repo's default branch
 2. for each unsynced commit (in chronological order):
    a. check if a branch `repo-sync/public-to-private/<short-sha>` already exists or a PR with that head branch was previously created (idempotency guard)
    b. create a branch `repo-sync/public-to-private/<short-sha>` based on the top of the current stack (or `main` if no stack)
-   c. cherry-pick the commit, preserving author and message.  if the cherry-pick fails (rare -- caused by private-only code overlapping with the public commit's diff context), the workflow **fails loudly** and notifies oncall.  see [RUNBOOK.md](RUNBOOK.md) for remediation steps
+   c. cherry-pick the commit, preserving author and message.  if the cherry-pick fails (rare -- caused by private-only code overlapping with the public commit's diff context), create a **conflict PR** (see below)
    d. create a PR with the base set to the previous sync branch (or `main`)
 
 ### merge strategy
@@ -94,6 +106,7 @@ the workflow is serialized per PR via a concurrency group (`cancel-in-progress: 
 
 **decision logic (in order):**
 1. **already handled?** if the PR has an existing approval OR a `Repo-Sync-Assigned` trailer → skip
+1b. **conflict PR?** if the PR has a `Repo-Sync-Conflict` trailer → skip.  these PRs unconditionally require human approval
 2. **commit count?** if the PR has ≠ 1 commit → skip.  the restack workflow handles restacking (either post-merge or via the `repo-sync:needs-restack` label, which can be added manually or by the escalation cron)
 3. **mergeable?** check via GitHub API (with retries for `UNKNOWN`):
    - `MERGEABLE` → approve + enable auto-merge (API-only, no git operations)
