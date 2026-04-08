@@ -203,6 +203,44 @@ src/repo_sync/            # python package
 tests/                    # pytest test suite
 ```
 
+## fixup scripts
+
+after stripping, some generated files (e.g., `Cargo.lock`) may reference crates or modules that were removed by the strip step.  to handle this, repo-sync supports optional **fixup scripts** that run after stripping but before the sync diff is computed.
+
+fixup scripts are configured per-direction via workflow inputs:
+
+```yaml
+sync:
+  uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+  with:
+    public_repo: warpdotdev/warp-public
+    private_repo: warpdotdev/warp-internal
+    app_id: ${{ vars.REPO_SYNC_APP_ID }}
+    private_to_public_fixup_script: scripts/post-strip-fixup.sh
+  secrets:
+    app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+```
+
+**script contract:**
+
+- the script receives the working directory (the stripped snapshot) as its sole argument.
+- it must exit 0 on success; a non-zero exit is treated as a permanent sync failure.
+- for private→public sync, the script runs on **both** the current and parent snapshots so the diff is computed from two consistently-fixed-up trees.
+
+example fixup script that regenerates `Cargo.lock` after stripping:
+
+```sh
+#!/bin/bash
+set -e
+cd "$1"
+cargo generate-lockfile
+```
+
+**supported directions:**
+
+- `private_to_public_fixup_script` -- runs after stripping, before diff computation.  fully supported.
+- `public_to_private_fixup_script` -- config surface exists but execution is not yet implemented.
+
 ## known limitations
 
 - **both repos must use the same default branch** (e.g., both use `main`).  the bootstrap script enforces this, and the sync workflows assume it.

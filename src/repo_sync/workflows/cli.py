@@ -251,6 +251,8 @@ def cmd_run_sync(args: argparse.Namespace) -> None:
             private_repo=args.private_repo,
             default_branch=args.default_branch,
             slack_webhook_url=args.slack_webhook_url,
+            private_to_public_fixup_script=args.private_to_public_fixup_script,
+            public_to_private_fixup_script=args.public_to_private_fixup_script,
         )
     except PermanentSyncError as e:
         logging.error("%s", e)
@@ -416,6 +418,14 @@ def main() -> None:
     p.add_argument("--private-repo", required=True)
     p.add_argument("--default-branch", required=True)
     p.add_argument("--slack-webhook-url", default="")
+    p.add_argument(
+        "--private-to-public-fixup-script", default="",
+        help="Optional script to run after stripping for private-to-public sync.",
+    )
+    p.add_argument(
+        "--public-to-private-fixup-script", default="",
+        help="Optional script to run after cherry-pick for public-to-private sync (not yet implemented).",
+    )
     p.set_defaults(func=cmd_run_sync)
 
     # escalation-check.

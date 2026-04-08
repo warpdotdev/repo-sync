@@ -100,6 +100,30 @@ def _run_strip(snapshot_dir: str) -> bool:
         return False
 
 
+def _run_fixup_script(script_path: str, working_dir: str) -> bool:
+    """Run an optional fixup script on a directory.
+
+    The script receives the working directory as its sole argument.
+    Returns True on success, False on failure.
+    """
+    try:
+        result = subprocess.run(
+            [script_path, working_dir],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "Fixup script %s failed (exit %d).\nstdout: %s\nstderr: %s",
+                script_path, result.returncode,
+                result.stdout[:1000], result.stderr[:1000],
+            )
+        return result.returncode == 0
+    except Exception:
+        logger.error("Fixup script %s raised an exception.", script_path, exc_info=True)
+        return False
+
+
 # Docker image for the PR description agent.  Built locally by the sync
 # workflow from docker/pr-description/Dockerfile (not pushed to a registry).
 # Can be overridden via environment variable for testing.
@@ -217,6 +241,7 @@ def _create_diff_repo(
     short_sha: str,
     slack_webhook_url: str,
     source_repo: str,
+    fixup_script: str = "",
 ) -> tuple[str, str, str, str, str] | None:
     """Create a temp git repo with consecutive clean snapshots.
 
@@ -235,6 +260,14 @@ def _create_diff_repo(
         raise PermanentSyncError(
             f"Stripping failed for {short_sha}."
         )
+    if fixup_script and not _run_fixup_script(fixup_script, snapshot_dir):
+        _notify_slack(
+            slack_webhook_url,
+            f"repo-sync: fixup script failed for {short_sha} in {source_repo}.",
+        )
+        raise PermanentSyncError(
+            f"Fixup script failed for {short_sha}."
+        )
 
     # Generate clean snapshot at the parent commit.
     prev_sha = source_git.rev_parse(f"{source_sha}^")
@@ -248,6 +281,14 @@ def _create_diff_repo(
         )
         raise PermanentSyncError(
             f"Stripping failed for parent of {short_sha}."
+        )
+    if fixup_script and not _run_fixup_script(fixup_script, prev_snapshot_dir):
+        _notify_slack(
+            slack_webhook_url,
+            f"repo-sync: fixup script failed for parent of {short_sha} in {source_repo}.",
+        )
+        raise PermanentSyncError(
+            f"Fixup script failed for parent of {short_sha}."
         )
 
     # Compute diff between the two clean snapshots using a temp git repo.
@@ -336,6 +377,7 @@ def _sync_private_to_public(
     source_repo: str,
     slack_webhook_url: str,
     pr_desc_cache: _PrDescriptionCache,
+    fixup_script: str = "",
 ) -> bool:
     """Handle private-to-public sync for a single commit.
 
@@ -348,6 +390,7 @@ def _sync_private_to_public(
     logger.info("Creating clean diff for %s...", short_sha)
     diff_result = _create_diff_repo(
         source_git, source_sha, short_sha, slack_webhook_url, source_repo,
+        fixup_script=fixup_script,
     )
     if diff_result is None:
         return False  # Empty diff — all changes were internal-only.
@@ -536,6 +579,7 @@ def create_sync_prs(
     default_branch: str,
     stack_top: str | None,
     slack_webhook_url: str = "",
+    fixup_script: str = "",
 ) -> None:
     """Create sync PRs for all unsynced commits.
 
@@ -579,6 +623,7 @@ def create_sync_prs(
                         source_repo=source_repo,
                         slack_webhook_url=slack_webhook_url,
                         pr_desc_cache=pr_desc_cache,
+                        fixup_script=fixup_script,
                     )
                 else:
                     created = _sync_public_to_private(
@@ -626,6 +671,8 @@ def run_sync(
     private_repo: str,
     default_branch: str,
     slack_webhook_url: str = "",
+    private_to_public_fixup_script: str = "",
+    public_to_private_fixup_script: str = "",
 ) -> None:
     """Run the full sync workflow: watermark, commit enumeration, PR creation.
 
@@ -635,6 +682,17 @@ def run_sync(
     peer_repo = public_repo if source_is_private else private_repo
     direction = "private-to-public" if source_is_private else "public-to-private"
     branch_prefix = f"repo-sync/{direction}"
+
+    # Select the fixup script for this direction.
+    if source_is_private:
+        fixup_script = os.path.abspath(private_to_public_fixup_script) if private_to_public_fixup_script else ""
+    else:
+        if public_to_private_fixup_script:
+            logger.warning(
+                "public-to-private fixup script is not yet implemented; ignoring '%s'.",
+                public_to_private_fixup_script,
+            )
+        fixup_script = ""
 
     source_git = GitOps(source_repo_dir)
     source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
@@ -676,4 +734,5 @@ def run_sync(
         default_branch=default_branch,
         stack_top=stack_top,
         slack_webhook_url=slack_webhook_url,
+        fixup_script=fixup_script,
     )

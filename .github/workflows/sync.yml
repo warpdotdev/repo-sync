@@ -25,6 +25,21 @@ on:
         required: false
         type: string
         default: ""
+      private_to_public_fixup_script:
+        description: "Optional script to run after stripping for private-to-public sync. Receives the snapshot directory as its sole argument."
+        required: false
+        type: string
+        default: ""
+      public_to_private_fixup_script:
+        description: "Optional script to run after cherry-pick for public-to-private sync (not yet implemented). Receives the working directory as its sole argument."
+        required: false
+        type: string
+        default: ""
+      setup_command:
+        description: "Optional command to run on the source repo before sync begins (e.g. 'cargo fetch' to populate the local registry cache for offline fixup scripts)."
+        required: false
+        type: string
+        default: ""
       app_id:
         description: "GitHub App ID."
         required: true
@@ -99,6 +114,10 @@ jobs:
       - name: Build PR description agent image
         run: docker build -f .repo-sync/docker/pr-description/Dockerfile -t repo-sync-pr-description .repo-sync
 
+      - name: Run setup command
+        if: inputs.setup_command != ''
+        run: ${{ inputs.setup_command }}
+
       - name: Run sync
         run: |
           python -m repo_sync.workflows.cli run-sync \
@@ -108,6 +127,8 @@ jobs:
             --public-repo "${{ inputs.public_repo }}" \
             --private-repo "${{ inputs.private_repo }}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
-            --slack-webhook-url "${{ inputs.slack_webhook_url }}"
+            --slack-webhook-url "${{ inputs.slack_webhook_url }}" \
+            --private-to-public-fixup-script "${{ inputs.private_to_public_fixup_script }}" \
+            --public-to-private-fixup-script "${{ inputs.public_to_private_fixup_script }}"
         env:
           WARP_API_KEY: ${{ secrets.warp_api_key }}
