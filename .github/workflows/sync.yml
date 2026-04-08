@@ -35,6 +35,11 @@ on:
         required: false
         type: string
         default: ""
+      setup_command:
+        description: "Optional command to run on the source repo before sync begins (e.g. 'cargo fetch' to populate the local registry cache for offline fixup scripts)."
+        required: false
+        type: string
+        default: ""
       app_id:
         description: "GitHub App ID."
         required: true
@@ -108,6 +113,10 @@ jobs:
 
       - name: Build PR description agent image
         run: docker build -f .repo-sync/docker/pr-description/Dockerfile -t repo-sync-pr-description .repo-sync
+
+      - name: Run setup command
+        if: inputs.setup_command != ''
+        run: ${{ inputs.setup_command }}
 
       - name: Run sync
         run: |

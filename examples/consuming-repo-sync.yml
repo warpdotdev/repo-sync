@@ -49,6 +49,10 @@ jobs:
       escalate_to: "@oncall-client-primary"
       app_id: ${{ vars.REPO_SYNC_APP_ID }}
       # slack_webhook_url: ${{ secrets.REPO_SYNC_SLACK_WEBHOOK }}
+      # Optional setup command that runs on the source repo before sync
+      # begins (e.g. to populate a local registry cache for offline fixup).
+      # setup_command: cargo fetch
+      #
       # Fixup scripts run after stripping (private-to-public) or after
       # cherry-pick (public-to-private).  The script receives the working
       # directory as its sole argument and must exit 0 on success.
