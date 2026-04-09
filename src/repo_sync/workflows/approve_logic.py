@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -172,26 +171,16 @@ def handle_conflict(
     conflicting_files = git.conflicting_files()
     logger.info("Conflicting files: %s", conflicting_files)
 
-    agent_succeeded = False
-    try:
-        agent_result = subprocess.run(
-            [
-                "oz", "agent", "run",
-                "--skill", "warpdotdev/repo-sync:conflict-resolution",
-                "--context",
-                f"Conflicting files on PR #{pr_number}: {' '.join(conflicting_files)}",
-            ],
-            capture_output=True,
-            timeout=600,
-        )
-        if agent_result.returncode == 0:
-            logger.info("Agent resolved conflicts.")
-            agent_succeeded = True
-        else:
-            logger.warning("Agent failed to resolve conflicts.")
-            git.rebase_abort()
-    except Exception:
-        logger.warning("Agent failed to resolve conflicts.")
+    from repo_sync.workflows.agent import run_conflict_resolution_agent
+
+    agent_succeeded = run_conflict_resolution_agent(
+        repo_dir=git.repo_dir,
+        context=(
+            f"Rebase conflict on PR #{pr_number}. "
+            f"Conflicting files: {' '.join(conflicting_files)}"
+        ),
+    )
+    if not agent_succeeded:
         git.rebase_abort()
 
     # Push if the agent succeeded.
