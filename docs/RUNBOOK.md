@@ -2,11 +2,11 @@
 
 operational procedures for repo-sync failure scenarios.
 
-## cherry-pick failure during public-to-private sync
+## cherry-pick conflict during public-to-private sync
 
 ### symptoms
 
-the sync workflow fails with a cherry-pick conflict error.  the Slack notification reads something like: `repo-sync: cherry-pick failed for <sha> in <repo>`.  the watermark does not advance, so all subsequent commits are blocked.
+the sync workflow creates a conflict PR with the `repo-sync:conflict` label and `Repo-Sync-Conflict` trailer.  the Slack notification reads something like: `repo-sync: cherry-pick conflict for <sha> in <repo>. Conflict PR #<n> created.`  a reviewer is automatically assigned.
 
 ### cause
 
@@ -16,95 +16,120 @@ this is rare -- it can only happen when a public commit modifies lines adjacent 
 
 ### remediation
 
-#### option 1: fix the root cause (preferred)
+#### option 1: resolve the conflict PR (preferred)
+
+the conflict PR contains the raw cherry-pick conflict (with conflict markers or modify/delete artifacts) and possibly an agent-proposed resolution commit on top.
+
+1. check out the conflict PR's branch locally
+2. resolve the conflicts (edit files to remove conflict markers, or handle modify/delete cases)
+3. push the resolution as a new commit
+4. approve the PR and merge it
+5. subsequent sync PRs in the stack will be restacked automatically
+
+the approve bot will **never** auto-approve a conflict PR (the `Repo-Sync-Conflict` trailer prevents this).  human approval is always required.
+
+#### option 2: fix the root cause
 
 adjust the private repo so the cherry-pick context matches:
 
-1. identify the conflicting file and lines from the workflow logs
+1. identify the conflicting file and lines from the conflict PR
 2. in the private repo, move the nearby `!repo-sync` marker regions so they don't overlap with the public commit's diff context.  options:
    - move the private-only code to a `private/` directory instead of using inline markers
    - rearrange the code so the marker region is further from the modified lines
 3. merge the fix into the private repo's default branch
-4. the next sync workflow run retries the cherry-pick against the updated `main`.  if the context now matches, the cherry-pick succeeds and the pipeline unblocks automatically
+4. close the conflict PR.  the next sync workflow run retries the cherry-pick against the updated `main`.  if the context now matches, the cherry-pick succeeds and creates a clean PR
 
-#### option 2: manually create the sync PR (escape hatch)
+#### option 3: manually create the sync PR (escape hatch)
 
-if fixing the root cause isn't practical or is too slow:
+if the conflict PR is unusable for some reason:
 
-1. determine the source commit SHA and the sync branch name from the workflow logs (format: `repo-sync/public-to-private/<short-sha>`)
-2. check out the private repo locally
-3. create the sync branch from the current stack top (or `main` if no stack):
+1. close the conflict PR
+2. determine the source commit SHA and the sync branch name from the workflow logs (format: `repo-sync/public-to-private/<short-sha>`)
+3. check out the private repo locally
+4. create the sync branch from the current stack top (or `main` if no stack):
    ```sh
    git checkout -b repo-sync/public-to-private/<short-sha> origin/main
    ```
-4. manually apply the public commit's changes, resolving any context mismatches:
+5. manually apply the public commit's changes, resolving any context mismatches:
    ```sh
    git cherry-pick <source-sha>
    # resolve conflicts, then:
    git cherry-pick --continue
    ```
-5. ensure the commit message includes the `Repo-Sync-Origin` trailer:
+6. ensure the commit message includes the `Repo-Sync-Origin` trailer:
    ```sh
    git commit --amend -m "$(git log -1 --format='%B')" -m "Repo-Sync-Origin: <source-repo>@<source-sha>"
    ```
-6. push the branch and create the PR with the correct `Repo-Sync-Origin` trailer in the description
-7. the sync workflow's idempotency guard will see the branch exists and skip this commit on the next run, unblocking the pipeline
+7. push the branch and create the PR with the correct `Repo-Sync-Origin` trailer in the description
+8. the sync workflow's idempotency guard will see the branch exists and skip this commit on the next run, unblocking the pipeline
 
 ### key properties
 
-- the watermark does not advance past the failing commit, so no commits are lost
+- the watermark does not advance past the conflicting commit, so no commits are lost
+- subsequent commits are stacked on top of the conflict PR and will be processed once it merges
 - the idempotency guard ensures manual intervention does not conflict with automation
-- once the failing commit is handled (by either path), the sync workflow processes all remaining unsynced commits automatically
+- once the conflict PR is resolved and merged, the sync workflow processes all remaining unsynced commits automatically
 
-## patch apply failure during private-to-public sync
+## cherry-pick conflict during private-to-public sync
 
 ### symptoms
 
-the sync workflow fails with a patch apply error.  the Slack notification reads something like: `repo-sync: patch apply failed for <sha> in <repo>. Un-synced public changes overlap.`  the watermark does not advance, so all subsequent commits are blocked.
+the sync workflow creates a conflict PR with the `repo-sync:conflict` label and `Repo-Sync-Conflict` trailer.  the Slack notification reads something like: `repo-sync: cherry-pick conflict for <sha> in <repo>. Conflict PR #<n> created.`  a reviewer is automatically assigned.
 
 ### cause
 
-a private commit modifies lines in a file that also has un-synced public changes nearby.  the sync workflow generates a patch (diff between consecutive clean snapshots of the private repo) and applies it to the public repo.  if the public repo's state in the affected area differs from the clean snapshot's context (because of un-synced public changes), `git apply` fails.
+a private commit modifies lines in a file that also has un-synced public changes nearby.  the sync workflow generates a clean delta (diff between consecutive stripped snapshots of the private repo) and cherry-picks it onto the public repo.  if the public repo's state in the affected area differs from the clean snapshot's context (because of un-synced public changes), the cherry-pick fails.
 
 this happens when both repos independently modify the same area of a file before the changes have been synced in both directions.
 
 ### remediation
 
-#### option 1: merge the pending public-to-private sync PRs first (preferred)
+#### option 1: resolve the conflict PR (preferred)
 
-the most common cause is pending public-to-private sync PRs that haven't merged yet.  once they merge, the private repo includes the public changes, and the next sync run generates a patch with the correct context.
+the conflict PR contains the raw cherry-pick conflict (with conflict markers or modify/delete artifacts) and possibly an agent-proposed resolution commit on top.
 
-1. check for open public-to-private sync PRs in the private repo
-2. merge them (or wait for them to auto-merge)
-3. the next private-to-public sync run retries with updated context and should succeed
+1. check out the conflict PR's branch locally
+2. resolve the conflicts (edit files to remove conflict markers, or handle modify/delete cases)
+3. push the resolution as a new commit
+4. approve the PR and merge it
+5. subsequent sync PRs in the stack will be restacked automatically
 
-#### option 2: manually create the sync PR (escape hatch)
+the approve bot will **never** auto-approve a conflict PR (the `Repo-Sync-Conflict` trailer prevents this).  human approval is always required.
 
-if merging pending sync PRs doesn't resolve the issue:
+#### option 2: merge pending public-to-private sync PRs
 
-1. determine the source commit SHA and sync branch name from the workflow logs (format: `repo-sync/private-to-public/<short-sha>`)
-2. check out the public repo locally
-3. create the sync branch from the current stack top (or `main` if no stack):
+the most common root cause is pending public-to-private sync PRs that haven't merged yet.  once they merge, the private repo includes the public changes, and a subsequent retry would generate a patch with the correct context.
+
+1. close the conflict PR
+2. check for open public-to-private sync PRs in the private repo
+3. merge them (or wait for them to auto-merge)
+4. the next private-to-public sync run retries with updated context and should succeed
+
+#### option 3: manually create the sync PR (escape hatch)
+
+if the conflict PR is unusable for some reason:
+
+1. close the conflict PR
+2. determine the source commit SHA and sync branch name from the workflow logs (format: `repo-sync/private-to-public/<short-sha>`)
+3. check out the public repo locally
+4. create the sync branch from the current stack top (or `main` if no stack):
    ```sh
    git checkout -b repo-sync/private-to-public/<short-sha> origin/main
    ```
-4. generate the patch locally and apply it with conflict resolution:
-   ```sh
-   # apply with --3way for merge-style conflict resolution, or apply manually
-   git apply --3way /path/to/patch.patch
-   ```
-5. commit with the `Repo-Sync-Origin` trailer:
+5. manually apply the changes with conflict resolution
+6. commit with the `Repo-Sync-Origin` trailer:
    ```sh
    git commit -m "repo-sync: sync from private" -m "Repo-Sync-Origin: <source-repo>@<source-sha>"
    ```
-6. push the branch and create the PR with the `Repo-Sync-Origin` trailer in the description
-7. the sync workflow's idempotency guard will see the branch exists and skip this commit on the next run
+7. push the branch and create the PR with the `Repo-Sync-Origin` trailer in the description
+8. the sync workflow's idempotency guard will see the branch exists and skip this commit on the next run
 
 ### key properties
 
-- the watermark does not advance past the failing commit, so no commits are lost
+- the watermark does not advance past the conflicting commit, so no commits are lost
+- subsequent commits are stacked on top of the conflict PR and will be processed once it merges
 - the idempotency guard ensures manual intervention does not conflict with automation
-- merging pending public-to-private sync PRs is usually sufficient to unblock the pipeline
+- merging pending public-to-private sync PRs is usually sufficient to prevent these conflicts
 
 ## missing Repo-Sync-Origin trailer on merge commit
 

@@ -132,6 +132,7 @@ jobs:
             --default-branch "${{ github.event.repository.default_branch }}" \
             --slack-webhook-url "${{ inputs.slack_webhook_url }}" \
             --private-to-public-fixup-script "${{ inputs.private_to_public_fixup_script }}" \
-            --public-to-private-fixup-script "${{ inputs.public_to_private_fixup_script }}"
+            --public-to-private-fixup-script "${{ inputs.public_to_private_fixup_script }}" \
+            --escalate-to "${{ inputs.escalate_to }}"
         env:
           WARP_API_KEY: ${{ secrets.warp_api_key }}

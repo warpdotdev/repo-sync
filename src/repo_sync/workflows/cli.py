@@ -253,6 +253,7 @@ def cmd_run_sync(args: argparse.Namespace) -> None:
             slack_webhook_url=args.slack_webhook_url,
             private_to_public_fixup_script=args.private_to_public_fixup_script,
             public_to_private_fixup_script=args.public_to_private_fixup_script,
+            escalate_to=args.escalate_to,
         )
     except PermanentSyncError as e:
         logging.error("%s", e)
@@ -425,6 +426,10 @@ def main() -> None:
     p.add_argument(
         "--public-to-private-fixup-script", default="",
         help="Optional script to run after cherry-pick for public-to-private sync (not yet implemented).",
+    )
+    p.add_argument(
+        "--escalate-to", default="@oncall-client-primary",
+        help="GitHub team or user to escalate to on timeout.",
     )
     p.set_defaults(func=cmd_run_sync)
 
