@@ -114,6 +114,9 @@ jobs:
       - name: Build PR description agent image
         run: docker build -f .repo-sync/docker/pr-description/Dockerfile -t repo-sync-pr-description .repo-sync
 
+      - name: Build conflict resolution agent image
+        run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
+
       - name: Run setup command
         if: inputs.setup_command != ''
         run: ${{ inputs.setup_command }}

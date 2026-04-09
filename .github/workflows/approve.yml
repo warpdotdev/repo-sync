@@ -45,6 +45,9 @@ on:
       approver_app_private_key:
         description: "GitHub App private key (approver bot)."
         required: true
+      warp_api_key:
+        description: "Warp API key for the conflict-resolution agent."
+        required: false
 
 # Serialize approval runs per PR.  Multiple events (opened, synchronize,
 # edited) can fire near-simultaneously; without this, parallel runs would
@@ -104,6 +107,9 @@ jobs:
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
 
+      - name: Build conflict resolution agent image
+        run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
+
       - name: Run approve
         run: |
           python -m repo_sync.workflows.cli approve-pr \
@@ -113,3 +119,5 @@ jobs:
             --gh-repo "${{ github.repository }}" \
             --escalate-to "${{ inputs.escalate_to }}" \
             --repo-dir .
+        env:
+          WARP_API_KEY: ${{ secrets.warp_api_key }}
