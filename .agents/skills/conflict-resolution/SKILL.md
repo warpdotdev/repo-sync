@@ -17,7 +17,7 @@ your job is to resolve the conflict markers and commit the result.  the calling 
 
 ## environment
 
-you are running inside a minimal Docker container.  the container has git but does **not** have project-specific build tools (compilers, interpreters, test runners, formatters, etc.).  **do not attempt to compile, format, or test the code.**  skip steps 5, 6, and 7 entirely.  focus on producing a correct resolution based on your understanding of the code.
+you are running inside a minimal Docker container.  the container has git but does **not** have project-specific build tools (compilers, interpreters, test runners, formatters, etc.).  **do not attempt to compile, format, or test the code.**  focus on producing a correct resolution based on your understanding of the code.
 
 ## step-by-step procedure
 
