@@ -247,6 +247,20 @@ class GhOps:
         finally:
             os.unlink(body_file)
 
+    def add_pr_comment(self, pr_number: int, body: str) -> None:
+        """Add a comment to a PR."""
+        self._run(
+            [
+                "pr",
+                "comment",
+                str(pr_number),
+                "--repo",
+                self.repo,
+                "--body",
+                body,
+            ]
+        )
+
     def request_reviewer(
         self, pr_number: int, reviewer: str
     ) -> None:
