@@ -412,20 +412,55 @@ def _handle_cherry_pick_conflict(
     optionally invokes the conflict-resolution agent to add a resolution
     commit on top, then creates the PR with appropriate trailers and labels.
     """
-    # Step 1: Commit the raw conflict as-is.
+    # Step 1: Detect modify/delete conflicts before staging resolves them.
+    # In a cherry-pick, "ours" = current branch (target), "theirs" =
+    # cherry-picked commit (source).  git add -A will silently keep the
+    # file in both cases, which may not be the correct resolution.
+    md_conflicts = peer_git.get_modify_delete_conflicts()
+    if md_conflicts:
+        logger.info(
+            "Detected %d modify/delete conflict(s): %s",
+            len(md_conflicts),
+            [c["path"] for c in md_conflicts],
+        )
+
+    # Step 2: Commit the raw conflict as-is.
     origin_trailer = f"Repo-Sync-Origin: {source_repo}@{source_sha}"
     peer_git.add_all()
     peer_git.commit(commit_message, trailers=[origin_trailer])
 
-    # Step 2: Invoke the conflict-resolution agent to produce a separate
+    # Step 3: If there were modify/delete conflicts, write a manifest to
+    # the working tree so the conflict-resolution agent can act on them.
+    # The manifest is intentionally NOT committed — it is a transient
+    # signal consumed and deleted by the agent.
+    manifest_path = os.path.join(peer_git.repo_dir, ".repo-sync-conflicts.json")
+    if md_conflicts:
+        manifest = {
+            "context": (
+                "Cherry-pick conflict. "
+                "'ours' = current branch (target), "
+                "'theirs' = cherry-picked commit (source)."
+            ),
+            "modify_delete_conflicts": md_conflicts,
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+            f.write("\n")
+
+    # Step 4: Invoke the conflict-resolution agent to produce a separate
     # resolution commit on top.  The agent runs in Docker and sees the
-    # committed conflict markers (case 2 in the skill).
+    # committed conflict markers (case 2 in the skill) plus the manifest
+    # for any modify/delete conflicts.
     from repo_sync.workflows.agent import run_conflict_resolution_agent
 
     agent_succeeded = run_conflict_resolution_agent(
         repo_dir=peer_git.repo_dir,
         context=f"Cherry-pick conflict on branch {sync_branch}.",
     )
+
+    # Clean up the manifest if the agent left it behind.
+    if os.path.exists(manifest_path):
+        os.remove(manifest_path)
     if agent_succeeded:
         logger.info("Agent produced a resolution commit for %s.", short_sha)
     else:
@@ -434,7 +469,7 @@ def _handle_cherry_pick_conflict(
             "PR will contain raw conflict markers.", short_sha,
         )
 
-    # Step 3: Push and create the PR.
+    # Step 5: Push and create the PR.
     conflict_trailer = format_conflict_trailer()
     pr_body = append_trailer(pr_body, origin_trailer)
     pr_body = append_trailer(pr_body, conflict_trailer)
@@ -452,7 +487,7 @@ def _handle_cherry_pick_conflict(
         )
         return
 
-    # Step 4: Add conflict label.
+    # Step 6: Add conflict label.
     peer_gh._run(
         ["label", "create", "repo-sync:conflict",
          "--color", "D93F0B",
@@ -465,7 +500,7 @@ def _handle_cherry_pick_conflict(
          "--add-label", "repo-sync:conflict"],
     )
 
-    # Step 5: Determine and assign reviewer.
+    # Step 7: Determine and assign reviewer.
     source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
     reviewer = determine_sync_reviewer(
         source_gh=source_gh,
@@ -478,7 +513,7 @@ def _handle_cherry_pick_conflict(
         check=False,
     )
 
-    # Step 6: Add Repo-Sync-Assigned trailer to PR body.
+    # Step 8: Add Repo-Sync-Assigned trailer to PR body.
     assigned_trailer = format_assigned_trailer(reviewer, datetime.now(timezone.utc))
     current_body = peer_gh._run(
         ["pr", "view", str(pr_number), "--repo", peer_gh.repo,
@@ -493,7 +528,7 @@ def _handle_cherry_pick_conflict(
         pr_number, short_sha, reviewer,
     )
 
-    # Step 7: Slack notification.
+    # Step 9: Slack notification.
     msg = (
         f"repo-sync: cherry-pick conflict for {source_sha[:7]} in "
         f"{peer_gh.repo}. Conflict PR #{pr_number} created."

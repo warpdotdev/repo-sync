@@ -164,6 +164,31 @@ class GitOps:
             return result.stdout.strip().splitlines()
         return []
 
+    def get_modify_delete_conflicts(self) -> list[dict[str, str]]:
+        """Return modify/delete conflicts detected from the unmerged index.
+
+        Must be called while the cherry-pick (or merge/rebase) is still
+        in-progress — i.e., before ``git add -A`` resolves the index.
+
+        Each returned dict has:
+          - ``path``: the conflicting file path.
+          - ``deleted_by``: ``"ours"`` if our side deleted the file
+            (porcelain ``DU``), or ``"theirs"`` if their side deleted it
+            (porcelain ``UD``).
+        """
+        result = self._run(["status", "--porcelain"], check=False)
+        conflicts: list[dict[str, str]] = []
+        for line in result.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            xy = line[:2]
+            path = line[3:]
+            if xy == "DU":
+                conflicts.append({"path": path, "deleted_by": "ours"})
+            elif xy == "UD":
+                conflicts.append({"path": path, "deleted_by": "theirs"})
+        return conflicts
+
     def archive_to_dir(self, ref: str, target_dir: str) -> None:
         """Extract the tree at a ref into a directory via git archive.
 

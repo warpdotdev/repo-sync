@@ -9,11 +9,11 @@ you are a merge conflict resolution agent.  your job is to resolve git merge con
 
 ## context
 
-you are checked out on a branch that has conflict markers in its code.  this can happen in two ways:
-1. **in-progress git operation** (rebase, cherry-pick, or merge): the conflicting files are unresolved in the git index.
-2. **committed conflict markers**: the conflict markers were committed as-is (e.g., by the sync workflow to preserve the raw conflict for review).  there is no in-progress git operation.
+you are checked out on a branch that has conflicts.  these can take two forms:
+- **text conflicts**: conflict markers (`<<<<<<<` / `=======` / `>>>>>>>`) in file contents.  these appear either as unresolved index entries (in-progress git operation) or as committed markers (case 2: the sync workflow committed them as-is for review).
+- **modify/delete conflicts**: one side modified a file while the other deleted it.  these do **not** produce conflict markers.  instead, the sync workflow detects them before staging, records them in a manifest file (`.repo-sync-conflicts.json` in the repo root), and commits the file as-is (kept).  the manifest is written to the working tree (not committed) for you to consume.
 
-your job is to resolve the conflict markers and commit the result.  the calling workflow handles pushing -- **do not push**.
+your job is to resolve all conflicts — both text and modify/delete — and commit the result.  the calling workflow handles pushing -- **do not push**.
 
 ## environment
 
@@ -37,7 +37,40 @@ grep -rln --exclude-dir=.git '^<{7}\s' .
 
 this gives you the list of files containing conflict markers.
 
-### 2. read and understand each conflict
+### 2. check for modify/delete conflicts
+
+check whether the calling workflow left a modify/delete manifest:
+```sh
+cat .repo-sync-conflicts.json 2>/dev/null
+```
+
+if the file exists, it contains a JSON object like:
+```json
+{
+  "context": "Cherry-pick conflict. 'ours' = current branch (target), 'theirs' = cherry-picked commit (source).",
+  "modify_delete_conflicts": [
+    { "path": "src/foo.rs", "deleted_by": "ours" },
+    { "path": "src/bar.rs", "deleted_by": "theirs" }
+  ]
+}
+```
+
+the `context` field explains what `ours` and `theirs` mean for this conflict.  `deleted_by` tells you which side deleted the file; the other side modified it.  because `git add -A` was run before the commit, the file currently **exists** in the committed tree (the deletion was not honored).
+
+for each modify/delete conflict:
+- read the file to understand the modifications.
+- look at git log and surrounding context to understand why the other side deleted it.
+- **default heuristic**: honor the deletion (`git rm <file>`).  the side that deleted the file made an intentional decision, and the modifications from the other side are typically moot.  for example, if the target branch deleted a file and the cherry-picked commit only tweaks a few lines in it, the correct resolution is almost certainly to delete the file.
+- **exception**: keep the file if the modification is clearly important and independent of the deletion (e.g., the deletion was part of a rename and the modification adds critical new content that should follow the rename).  if you keep the file, no action is needed — it is already in the committed tree.
+
+after processing all modify/delete conflicts, **delete the manifest**:
+```sh
+rm -f .repo-sync-conflicts.json
+```
+
+if the manifest does not exist, skip this step — there are no modify/delete conflicts.
+
+### 3. read and understand each text conflict
 
 for each conflicting file:
 - read the entire file.
@@ -53,7 +86,7 @@ for each conflicting file:
   the `<ref-or-label>` after `<<<<<<<` and `>>>>>>>` tells you which branch or commit each side came from.  **read these labels carefully** -- the meaning of "first side" vs. "second side" depends on whether the conflict arose from a `git merge` or a `git rebase` (rebase swaps the sides relative to merge).  do not assume which side is "ours" or "theirs" -- always check the labels.
 - look at surrounding code and other files in the repository for context on what the correct resolution should be.
 
-### 3. resolve each conflict
+### 4. resolve each text conflict
 
 edit each conflicting file to remove all conflict markers and produce the correct merged result.  every conflict region must be resolved -- there must be zero `<<<<<<<`, `=======`, or `>>>>>>>` markers remaining in any file.
 
@@ -62,7 +95,7 @@ after editing, stage each resolved file:
 git add <file>
 ```
 
-### 4. verify: no remaining conflict markers
+### 5. verify: no remaining conflict markers
 
 run a search across the entire repository to confirm no conflict markers remain:
 ```sh
@@ -71,9 +104,9 @@ grep -Ern --exclude-dir=.git '^<{7}([^<]|$)|^={7}([^=]|$)|^>{7}([^>]|$)' .
 
 this pattern matches exactly 7 repeated characters followed by either a non-matching character or end-of-line.  the end-of-line alternative is needed because conflict markers (especially `=======`) can appear as bare lines with nothing after them.
 
-if any markers remain, go back to step 3 and resolve them.
+if any markers remain, go back to step 4 and resolve them.
 
-### 5. finalize the resolution
+### 6. finalize the resolution
 
 the correct command to finalize the resolution depends on which git operation caused the conflict.  detect the in-progress operation and use the appropriate command:
 
