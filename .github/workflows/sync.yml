@@ -56,6 +56,9 @@ on:
       warp_api_key:
         description: "Warp API key."
         required: true
+      ssh_key:
+        description: "Optional SSH private key for accessing private dependencies (e.g. private crates) during the setup command."
+        required: false
 
 concurrency:
   group: repo-sync-${{ github.repository == inputs.private_repo && 'private-to-public' || 'public-to-private' }}-${{ github.repository }}-${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
@@ -116,6 +119,12 @@ jobs:
 
       - name: Build conflict resolution agent image
         run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
+
+      - name: Setup SSH keys
+        if: secrets.ssh_key != ''
+        uses: webfactory/ssh-agent@v0.7.0
+        with:
+          ssh-private-key: ${{ secrets.ssh_key }}
 
       - name: Run setup command
         if: inputs.setup_command != ''

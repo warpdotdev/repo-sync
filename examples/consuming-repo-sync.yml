@@ -60,6 +60,8 @@ jobs:
       # public_to_private_fixup_script: scripts/post-cherry-pick-fixup.sh
     secrets:
       app_private_key: ${{ secrets.REPO_SYNC_APP_PRIVATE_KEY }}
+      # Optional SSH key for fetching private dependencies during setup.
+      # ssh_key: ${{ secrets.REPO_SYNC_SSH_KEY }}
 
   # -----------------------------------------------------------------------
   # Restack: triggered when a sync PR is merged.
