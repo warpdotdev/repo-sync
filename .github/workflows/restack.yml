@@ -37,6 +37,9 @@ on:
       app_private_key:
         description: "GitHub App private key."
         required: true
+      warp_api_key:
+        description: "Warp API key for the conflict-resolution agent."
+        required: false
   # workflow_dispatch is used for stuck-stack recovery.
   workflow_dispatch:
     inputs:
@@ -119,6 +122,9 @@ jobs:
       - name: Install repo-sync tools
         run: pip install -e .repo-sync
 
+      - name: Build conflict resolution agent image
+        run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
+
       - name: Configure git identity
         run: |
           git config --global user.name "warp-repo-sync[bot]"
@@ -137,4 +143,7 @@ jobs:
             --public-repo "${PUBLIC_REPO}" \
             --private-repo "${PRIVATE_REPO}" \
             --default-branch "${{ github.event.repository.default_branch }}" \
+            --escalate-to "${ESCALATE_TO}" \
             --repo-dir .
+        env:
+          WARP_API_KEY: ${{ secrets.warp_api_key }}

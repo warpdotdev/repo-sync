@@ -110,6 +110,27 @@ class GitOps:
             ["rebase", "--onto", new_base, old_base, branch], check=False
         )
 
+    def rebase_continue(self) -> CommandResult:
+        """Continue an in-progress rebase after conflicts have been staged.
+
+        Sets GIT_EDITOR=true to prevent an interactive editor from opening
+        in non-interactive environments (CI).  The original commit message
+        is preserved.
+        """
+        env = {**os.environ, **self._env_additions, "GIT_EDITOR": "true"}
+        result = subprocess.run(
+            ["git", "rebase", "--continue"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return CommandResult(
+            returncode=result.returncode,
+            stdout=result.stdout.strip(),
+            stderr=result.stderr.strip(),
+        )
+
     def rebase_abort(self) -> None:
         """Abort an in-progress rebase."""
         self._run(["rebase", "--abort"], check=False)

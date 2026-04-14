@@ -218,6 +218,7 @@ def cmd_restack_pr(args: argparse.Namespace) -> None:
             public_repo=args.public_repo,
             private_repo=args.private_repo,
             default_branch=args.default_branch,
+            escalate_to=args.escalate_to,
         )
     except RestackError as e:
         logging.error("%s", e)
@@ -396,6 +397,7 @@ def main() -> None:
     p.add_argument("--private-repo", required=True)
     p.add_argument("--default-branch", required=True)
     p.add_argument("--repo-dir", required=True)
+    p.add_argument("--escalate-to", default="@oncall-client-primary")
     p.set_defaults(func=cmd_restack_pr)
 
     # approve-pr.

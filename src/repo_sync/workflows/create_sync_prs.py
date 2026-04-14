@@ -30,8 +30,12 @@ from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.trailers import (
     SyncOrigin,
     append_trailer,
-    format_assigned_trailer,
     format_conflict_trailer,
+)
+from repo_sync.workflows.conflict import (
+    add_conflict_label,
+    assign_conflict_reviewer,
+    run_agent_with_manifest,
 )
 from repo_sync.workflows.descriptions import parse_agent_output, private_to_public_fallback
 from repo_sync.workflows.sync import (
@@ -407,47 +411,16 @@ def _handle_conflict_post_creation(
     comment, appends the Repo-Sync-Assigned trailer, and sends a Slack
     notification.
     """
-    # Add conflict label.
-    peer_gh._run(
-        ["label", "create", "repo-sync:conflict",
-         "--color", "D93F0B",
-         "--description", "Sync PR has merge conflicts",
-         "--repo", peer_gh.repo],
-        check=False,
-    )
-    peer_gh._run(
-        ["pr", "edit", str(pr_number), "--repo", peer_gh.repo,
-         "--add-label", "repo-sync:conflict"],
+    add_conflict_label(peer_gh, pr_number)
+
+    reviewer = assign_conflict_reviewer(
+        peer_gh, pr_number, source_repo, source_sha, escalate_to,
     )
 
-    # Determine and assign reviewer.
-    source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
-    reviewer = determine_sync_reviewer(
-        source_gh=source_gh,
-        source_sha=source_sha,
-        fallback_team=escalate_to,
-    )
-    peer_gh._run(
-        ["pr", "edit", str(pr_number), "--repo", peer_gh.repo,
-         "--add-reviewer", reviewer],
-        check=False,
-    )
-
-    # Add a comment noting the conflict and reviewer assignment.
     peer_gh.add_pr_comment(
         pr_number,
         f"Assigning to @{reviewer} to review/resolve sync conflict.",
     )
-
-    # Add Repo-Sync-Assigned trailer to PR body.
-    assigned_trailer = format_assigned_trailer(reviewer, datetime.now(timezone.utc))
-    current_body = peer_gh._run(
-        ["pr", "view", str(pr_number), "--repo", peer_gh.repo,
-         "--json", "body", "--jq", ".body"],
-        check=False,
-    ) or ""
-    updated_body = append_trailer(current_body, assigned_trailer)
-    peer_gh.update_pr_body(pr_number, updated_body)
 
     logger.info(
         "Conflict PR #%d created for %s. Reviewer: %s.",
@@ -543,12 +516,6 @@ def _sync_private_to_public(
         if is_conflict:
             # Detect modify/delete conflicts before staging resolves them.
             md_conflicts = peer_git.get_modify_delete_conflicts()
-            if md_conflicts:
-                logger.info(
-                    "Detected %d modify/delete conflict(s): %s",
-                    len(md_conflicts),
-                    [c["path"] for c in md_conflicts],
-                )
 
             peer_git.add_all()
             peer_git.commit(
@@ -556,42 +523,16 @@ def _sync_private_to_public(
                 trailers=[origin_trailer],
             )
 
-            # Write a manifest for modify/delete conflicts so the
-            # conflict-resolution agent can act on them.  The manifest is
-            # intentionally NOT committed — it is a transient signal
-            # consumed and deleted by the agent.
-            manifest_path = os.path.join(peer_git.repo_dir, ".repo-sync-conflicts.json")
-            if md_conflicts:
-                manifest = {
-                    "context": (
-                        "Cherry-pick conflict. "
-                        "'ours' = current branch (target), "
-                        "'theirs' = cherry-picked commit (source)."
-                    ),
-                    "modify_delete_conflicts": md_conflicts,
-                }
-                with open(manifest_path, "w") as f:
-                    json.dump(manifest, f, indent=2)
-                    f.write("\n")
-
-            from repo_sync.workflows.agent import run_conflict_resolution_agent
-
-            agent_succeeded = run_conflict_resolution_agent(
-                repo_dir=peer_git.repo_dir,
-                context=f"Cherry-pick conflict on branch {sync_branch}.",
+            run_agent_with_manifest(
+                git=peer_git,
+                md_conflicts=md_conflicts,
+                manifest_context=(
+                    "Cherry-pick conflict. "
+                    "'ours' = current branch (target), "
+                    "'theirs' = cherry-picked commit (source)."
+                ),
+                agent_context=f"Cherry-pick conflict on branch {sync_branch}.",
             )
-
-            # Clean up the manifest if the agent left it behind.
-            if os.path.exists(manifest_path):
-                os.remove(manifest_path)
-
-            if agent_succeeded:
-                logger.info("Agent produced a resolution commit for %s.", short_sha)
-            else:
-                logger.warning(
-                    "Agent did not resolve conflicts for %s. "
-                    "PR will contain raw conflict markers.", short_sha,
-                )
         else:
             peer_git.commit_amend_message("repo-sync: sync from private", origin_trailer)
 
@@ -715,52 +656,20 @@ def _sync_public_to_private(
     if is_conflict:
         # Detect modify/delete conflicts before staging resolves them.
         md_conflicts = peer_git.get_modify_delete_conflicts()
-        if md_conflicts:
-            logger.info(
-                "Detected %d modify/delete conflict(s): %s",
-                len(md_conflicts),
-                [c["path"] for c in md_conflicts],
-            )
 
         peer_git.add_all()
         peer_git.commit(commit_subject, trailers=[origin_trailer])
 
-        # Write a manifest for modify/delete conflicts so the
-        # conflict-resolution agent can act on them.  The manifest is
-        # intentionally NOT committed — it is a transient signal
-        # consumed and deleted by the agent.
-        manifest_path = os.path.join(peer_git.repo_dir, ".repo-sync-conflicts.json")
-        if md_conflicts:
-            manifest = {
-                "context": (
-                    "Cherry-pick conflict. "
-                    "'ours' = current branch (target), "
-                    "'theirs' = cherry-picked commit (source)."
-                ),
-                "modify_delete_conflicts": md_conflicts,
-            }
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f, indent=2)
-                f.write("\n")
-
-        from repo_sync.workflows.agent import run_conflict_resolution_agent
-
-        agent_succeeded = run_conflict_resolution_agent(
-            repo_dir=peer_git.repo_dir,
-            context=f"Cherry-pick conflict on branch {sync_branch}.",
+        run_agent_with_manifest(
+            git=peer_git,
+            md_conflicts=md_conflicts,
+            manifest_context=(
+                "Cherry-pick conflict. "
+                "'ours' = current branch (target), "
+                "'theirs' = cherry-picked commit (source)."
+            ),
+            agent_context=f"Cherry-pick conflict on branch {sync_branch}.",
         )
-
-        # Clean up the manifest if the agent left it behind.
-        if os.path.exists(manifest_path):
-            os.remove(manifest_path)
-
-        if agent_succeeded:
-            logger.info("Agent produced a resolution commit for %s.", short_sha)
-        else:
-            logger.warning(
-                "Agent did not resolve conflicts for %s. "
-                "PR will contain raw conflict markers.", short_sha,
-            )
     else:
         current_msg = peer_git.commit_message("HEAD")
         peer_git.commit_amend_message(current_msg, origin_trailer)
