@@ -137,9 +137,9 @@ def parse_conflict(text: str) -> bool:
     return False
 
 
-def format_conflict_trailer() -> str:
+def format_conflict_trailer(conflict_type: str = "cherry-pick") -> str:
     """Format a Repo-Sync-Conflict trailer line."""
-    return f"{_CONFLICT_PREFIX} cherry-pick"
+    return f"{_CONFLICT_PREFIX} {conflict_type}"
 
 
 def format_assigned_trailer(username: str, timestamp: datetime) -> str:

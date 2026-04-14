@@ -17,7 +17,16 @@ import subprocess
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
-from repo_sync.stack.trailers import parse_origin
+from repo_sync.stack.trailers import (
+    append_trailer,
+    format_conflict_trailer,
+    parse_origin,
+)
+from repo_sync.workflows.conflict import (
+    add_conflict_label,
+    assign_conflict_reviewer,
+    run_agent_with_manifest,
+)
 from repo_sync.workflows.restack_workflow import determine_direction
 
 logger = logging.getLogger(__name__)
@@ -145,12 +154,104 @@ def find_sync_commit_old_base(git: GitOps) -> str | None:
     return None
 
 
+def _handle_restack_conflict(
+    git: GitOps,
+    gh: GhOps,
+    pr_number: int,
+    head_branch: str,
+    default_branch: str,
+    escalate_to: str,
+) -> None:
+    """Handle a rebase conflict: accept markers, invoke agent, push, label PR.
+
+    Must be called while the rebase is still paused (conflict state).
+    On return the rebase is always resolved and the branch has been
+    force-pushed.
+    """
+    # Detect modify/delete conflicts while the rebase is paused.
+    md_conflicts = git.get_modify_delete_conflicts()
+
+    # Accept the conflict markers so the agent sees committed state
+    # (same pattern as the sync workflow's cherry-pick conflict path).
+    git.add_all()
+    continue_result = git.rebase_continue()
+    if not continue_result.success:
+        logger.error(
+            "git rebase --continue failed after staging markers: %s",
+            continue_result.stderr,
+        )
+        git.rebase_abort()
+        gh.update_pr_base(pr_number, default_branch)
+        return
+
+    # Run the conflict-resolution agent on the committed markers.
+    agent_succeeded = run_agent_with_manifest(
+        git=git,
+        md_conflicts=md_conflicts,
+        manifest_context=(
+            "Rebase conflict. "
+            "'ours' = new base (target default branch), "
+            "'theirs' = rebased commit (sync commit)."
+        ),
+        agent_context=f"Rebase conflict on branch {head_branch}.",
+    )
+
+    # Push the result (resolved or with markers).
+    git.push("origin", head_branch, force_with_lease=True)
+
+    # Update PR base to the default branch.
+    gh.update_pr_base(pr_number, default_branch)
+
+    # Label, conflict trailer, reviewer assignment.
+    add_conflict_label(gh, pr_number)
+
+    # Append Repo-Sync-Conflict trailer to PR body.
+    current_body = gh._run(
+        ["pr", "view", str(pr_number), "--repo", gh.repo,
+         "--json", "body", "--jq", ".body"],
+        check=False,
+    ) or ""
+    updated_body = append_trailer(current_body, format_conflict_trailer("rebase"))
+    gh.update_pr_body(pr_number, updated_body)
+
+    # Determine and assign reviewer (parses origin from the PR body).
+    origin = parse_origin(current_body)
+    reviewer = assign_conflict_reviewer(
+        gh, pr_number,
+        source_repo=origin.repo if origin else None,
+        source_sha=origin.sha if origin else None,
+        escalate_to=escalate_to,
+    )
+
+    # Post a comment explaining the conflict.
+    status = (
+        "The conflict-resolution agent proposed a resolution."
+        if agent_succeeded
+        else "The conflict-resolution agent could not resolve the conflict. "
+             "The PR contains raw conflict markers."
+    )
+    gh.add_pr_comment(
+        pr_number,
+        f"Rebase conflict during restack. {status}\n\n"
+        f"Assigning to @{reviewer} to review/resolve.",
+    )
+
+    # Remove needs-restack label since we handled the conflict.
+    gh.remove_label(pr_number, "repo-sync:needs-restack")
+
+    logger.info(
+        "Conflict handling complete for PR #%d. Reviewer: %s.",
+        pr_number, reviewer,
+    )
+
+
 def rebase_pr(
     git: GitOps,
     gh: GhOps,
     pr_number: int,
     head_branch: str,
     default_branch: str,
+    escalate_to: str = "@oncall-client-primary",
 ) -> bool:
     """Rebase a PR onto the default branch using trailer-based old base.
 
@@ -178,10 +279,10 @@ def rebase_pr(
     )
 
     if not result.success:
-        logger.warning("Rebase has conflicts.")
-        git.rebase_abort()
-        # Update the PR base to main so the approve workflow can handle it.
-        gh.update_pr_base(pr_number, default_branch)
+        logger.warning("Rebase has conflicts for PR #%d.", pr_number)
+        _handle_restack_conflict(
+            git, gh, pr_number, head_branch, default_branch, escalate_to,
+        )
         return False
 
     # Push guard: only push if the rebase actually changed something.
@@ -218,6 +319,7 @@ def run_restack(
     # Stuck-recovery / needs-restack mode fields.
     stuck_pr_number: int | None = None,
     stuck_head_branch: str | None = None,
+    escalate_to: str = "@oncall-client-primary",
 ) -> None:
     """Run the full restack workflow logic.
 
@@ -246,7 +348,7 @@ def run_restack(
     logger.info("Next PR in stack: #%d (branch: %s).", next_pr, next_head)
 
     # Step 3: Rebase the PR.
-    rebase_pr(git, gh, next_pr, next_head, default_branch)
+    rebase_pr(git, gh, next_pr, next_head, default_branch, escalate_to)
 
 
 def run_restack_from_event(
@@ -259,6 +361,7 @@ def run_restack_from_event(
     public_repo: str,
     private_repo: str,
     default_branch: str,
+    escalate_to: str = "@oncall-client-primary",
 ) -> None:
     """Run the restack workflow from a GitHub Actions event context.
 
@@ -303,6 +406,7 @@ def run_restack_from_event(
             watermark_repo=repository,
             stuck_pr_number=pr_number,
             stuck_head_branch=head_branch,
+            escalate_to=escalate_to,
         )
     else:
         # Normal post-merge mode.
@@ -335,4 +439,5 @@ def run_restack_from_event(
             watermark_repo=repository,
             merge_sha=merge_sha,
             merged_head_branch=merged_head_branch_name,
+            escalate_to=escalate_to,
         )
