@@ -289,6 +289,72 @@ class TestValidateMarkers:
         assert any("cannot be combined" in e for e in errors)
 
 
+class TestMarkerSubstringFalsePositives:
+    """Marker-like substrings must not be treated as actual markers."""
+
+    def test_start_end_slash_notation_not_a_marker(self) -> None:
+        """Text like 'private-start/end' referencing markers in prose is not a marker."""
+        lines = [
+            "These are behind `!repo-sync: private-start/end` markers.\n",
+        ]
+        assert validate_markers(lines) == []
+
+    def test_start_end_slash_notation_not_stripped(self) -> None:
+        """Lines containing 'private-start/end' in prose are preserved during stripping."""
+        lines = [
+            "See `!repo-sync: private-start/end` docs.\n",
+        ]
+        result = strip_private_regions(lines)
+        assert result == lines
+
+    def test_marker_with_trailing_punctuation_not_matched(self) -> None:
+        """A marker immediately followed by punctuation is not a match."""
+        lines = [
+            "Use !repo-sync: private-start. More text.\n",
+        ]
+        # The period immediately follows 'private-start', so it should not
+        # be treated as a marker and no unterminated error should occur.
+        assert validate_markers(lines) == []
+
+    def test_private_file_substring_not_matched(self) -> None:
+        """'private-file' as a substring of a longer token is not a match."""
+        lines = [
+            "Docs: !repo-sync: private-file-extra\n",
+            "content\n",
+        ]
+        assert has_private_file_marker(lines) is False
+
+    def test_real_marker_with_trailing_whitespace_still_works(self) -> None:
+        """A marker followed by whitespace (e.g. trailing comment) still matches."""
+        lines = [
+            "// !repo-sync: private-start -- reason\n",
+            "private\n",
+            "// !repo-sync: private-end -- end\n",
+        ]
+        result = strip_private_regions(lines)
+        assert result == []
+
+    def test_real_marker_at_end_of_line_still_works(self) -> None:
+        """A marker at the very end of a line (before newline) still matches."""
+        lines = [
+            "// !repo-sync: private-start\n",
+            "private\n",
+            "// !repo-sync: private-end\n",
+        ]
+        result = strip_private_regions(lines)
+        assert result == []
+
+    def test_real_marker_at_end_of_file_no_newline(self) -> None:
+        """A marker at EOF without a trailing newline still matches."""
+        lines = [
+            "// !repo-sync: private-start",
+            "private\n",
+            "// !repo-sync: private-end",
+        ]
+        result = strip_private_regions(lines)
+        assert result == []
+
+
 class TestStripPrivateRegionsErrors:
     """strip_private_regions raises MarkerError on invalid markers."""
 
