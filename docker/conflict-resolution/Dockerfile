@@ -29,7 +29,7 @@
 #       --cwd /mnt/repo \
 #       --output-format json
 
-FROM warpdotdev/warp-agent:latest-preview
+FROM warpdotdev/warp-agent:latest
 
 # Install git.  The base image intentionally omits it (for isolation in
 # the PR description agent), but the conflict-resolution agent needs it

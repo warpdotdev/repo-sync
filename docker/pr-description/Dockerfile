@@ -35,7 +35,7 @@
 #       --cwd /mnt/snapshot \
 #       --output-format json
 
-FROM warpdotdev/warp-agent:latest-preview
+FROM warpdotdev/warp-agent:latest
 
 # Install the PR description skill where the --skill flag can discover it.
 # The oz CLI searches .warp/skills/ in the home directory and the working
