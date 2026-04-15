@@ -8,7 +8,7 @@
 set -e
 
 # Resolve the agent binary.
-AGENT_BIN_DIR="/opt/warpdotdev/oz"
+AGENT_BIN_DIR="/opt/warpdotdev/oz-stable"
 AGENT_BINARY="$AGENT_BIN_DIR/oz"
 
 export PATH="$PATH:$AGENT_BIN_DIR"
