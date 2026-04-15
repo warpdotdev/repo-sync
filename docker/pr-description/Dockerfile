@@ -38,11 +38,11 @@
 FROM warpdotdev/warp-agent:latest
 
 # Install the PR description skill where the --skill flag can discover it.
-# The oz CLI searches .warp/skills/ in the home directory and the working
-# directory.  We place it in the home directory because the working directory
-# is a read-only volume mount that would overlay any files placed here at
-# build time.
-COPY .agents/skills/pr-description/SKILL.md /home/warp-agent/.warp/skills/pr-description/SKILL.md
+# The oz CLI searches .agents/skills/ (among others) in the home directory
+# and the working directory.  We place it in the home directory because the
+# working directory is a read-only volume mount that would overlay any files
+# placed here at build time.
+COPY .agents/skills/pr-description/SKILL.md /home/warp-agent/.agents/skills/pr-description/SKILL.md
 
 # Use a minimal entrypoint that skips git/gh setup (isolation: no access
 # to private repo history or credentials).

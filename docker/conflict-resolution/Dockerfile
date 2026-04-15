@@ -40,7 +40,7 @@ USER warp-agent
 
 # Install the conflict-resolution skill where the --skill flag can
 # discover it.
-COPY .agents/skills/conflict-resolution/SKILL.md /home/warp-agent/.warp/skills/conflict-resolution/SKILL.md
+COPY .agents/skills/conflict-resolution/SKILL.md /home/warp-agent/.agents/skills/conflict-resolution/SKILL.md
 
 # Use an entrypoint that sets up git identity and credentials (unlike
 # pr-description, which skips git setup for isolation).
