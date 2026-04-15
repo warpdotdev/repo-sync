@@ -12,13 +12,32 @@ PRIVATE_END = "!repo-sync: private-end"
 PRIVATE_FILE = "!repo-sync: private-file"
 
 
+def _contains_marker(line: str, marker: str) -> bool:
+    """Return True if *line* contains *marker* as a distinct token.
+
+    The marker must be followed by whitespace or appear at the end of
+    the string to count as a match.  This prevents false positives when
+    the marker text appears as a substring of a longer token (e.g.
+    ``!repo-sync: private-start/end`` referencing markers in prose).
+    """
+    idx = 0
+    while True:
+        pos = line.find(marker, idx)
+        if pos == -1:
+            return False
+        end = pos + len(marker)
+        if end >= len(line) or line[end].isspace():
+            return True
+        idx = end
+
+
 class MarkerError(Exception):
     """Raised when marker validation fails."""
 
 
 def has_private_file_marker(lines: list[str]) -> bool:
     """Return True if any line contains the whole-file private marker."""
-    return any(PRIVATE_FILE in line for line in lines)
+    return any(_contains_marker(line, PRIVATE_FILE) for line in lines)
 
 
 def validate_markers(lines: list[str], *, filepath: str = "<unknown>") -> list[str]:
@@ -32,8 +51,8 @@ def validate_markers(lines: list[str], *, filepath: str = "<unknown>") -> list[s
     start_line: int | None = None
 
     for i, line in enumerate(lines, start=1):
-        has_start = PRIVATE_START in line
-        has_end = PRIVATE_END in line
+        has_start = _contains_marker(line, PRIVATE_START)
+        has_end = _contains_marker(line, PRIVATE_END)
 
         if has_start and has_end:
             # A line containing both markers is ambiguous; treat as an error.
@@ -68,7 +87,11 @@ def validate_markers(lines: list[str], *, filepath: str = "<unknown>") -> list[s
 
     # A file with the private-file marker must not also have region markers.
     if has_private_file_marker(lines):
-        if any(PRIVATE_START in line or PRIVATE_END in line for line in lines):
+        if any(
+            _contains_marker(line, PRIVATE_START)
+            or _contains_marker(line, PRIVATE_END)
+            for line in lines
+        ):
             errors.append(
                 f"{filepath}: private-file marker cannot be combined with "
                 "private-start/private-end region markers"
@@ -92,8 +115,8 @@ def strip_private_regions(
     in_private = False
 
     for line in lines:
-        has_start = PRIVATE_START in line
-        has_end = PRIVATE_END in line
+        has_start = _contains_marker(line, PRIVATE_START)
+        has_end = _contains_marker(line, PRIVATE_END)
 
         if has_start:
             in_private = True

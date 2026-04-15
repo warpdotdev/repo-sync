@@ -107,8 +107,15 @@ def _run_strip(snapshot_dir: str) -> bool:
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            logger.error(
+                "Stripping tool failed (exit %d).\nstdout: %s\nstderr: %s",
+                result.returncode,
+                result.stdout[:2000], result.stderr[:2000],
+            )
         return result.returncode == 0
     except Exception:
+        logger.error("Stripping tool raised an exception.", exc_info=True)
         return False
 
 
