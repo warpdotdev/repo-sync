@@ -120,7 +120,18 @@ jobs:
       - name: Build conflict resolution agent image
         run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
 
+      - name: Check if SSH key is provided
+        id: check-ssh-key
+        shell: bash
+        run: |
+          if [ "${{ secrets.ssh_key }}" != "" ]; then
+            echo "::output name=exists::true"
+          else
+            echo "::output name=exists::false"
+          fi
+
       - name: Setup SSH keys
+        if: ${{ steps.check-ssh-key.outputs.exists == 'true' }}
         uses: webfactory/ssh-agent@v0.7.0
         with:
           ssh-private-key: ${{ secrets.ssh_key }}
