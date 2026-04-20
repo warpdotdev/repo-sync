@@ -406,7 +406,7 @@ note: use `@david/integration` as the ref (not `@v1`) to test the current branch
      validate:
        runs-on: ubuntu-latest
        steps:
-         - uses: actions/checkout@v4
+         - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
          - uses: warpdotdev/repo-sync/actions/validate-markers@david/integration
    ```
 2. open a PR with a malformed marker (e.g., `private-start` without `private-end`).

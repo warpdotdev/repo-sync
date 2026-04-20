@@ -69,7 +69,7 @@ jobs:
     steps:
       - name: Generate installation token
         id: token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ inputs.approver_app_id }}
           private-key: ${{ secrets.approver_app_private_key }}
@@ -81,7 +81,7 @@ jobs:
       # Minimal checkout so the gh CLI has a git context.  The full
       # fetch-depth: 0 clone is only done for the conflict path.
       - name: Checkout repo (shallow)
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ steps.token.outputs.token }}
 
@@ -92,7 +92,7 @@ jobs:
         run: git fetch --unshallow origin 2>/dev/null || true
 
       - name: Checkout repo-sync tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: warpdotdev/repo-sync
           ref: ${{ inputs.repo_sync_ref }}
@@ -100,7 +100,7 @@ jobs:
           token: ${{ steps.token.outputs.token }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 

@@ -83,8 +83,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: warpdotdev/repo-sync/actions/validate-markers@v1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: warpdotdev/repo-sync/actions/validate-markers@main
 ```
 
 this validates that all `!repo-sync` markers are properly paired, not nested, and that no symlinks exist in the repo.
@@ -111,7 +111,7 @@ on:
 jobs:
   sync:
     if: github.event_name == 'push'
-    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -123,7 +123,7 @@ jobs:
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'repo-sync/')) ||
       (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'repo-sync:needs-restack' && startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
-    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -133,7 +133,7 @@ jobs:
 
   approve:
     if: github.event_name == 'pull_request' && github.event.action != 'closed' && startsWith(github.event.pull_request.head.ref, 'repo-sync/')
-    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -143,7 +143,7 @@ jobs:
 
   escalation:
     if: github.event_name == 'schedule'
-    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@main
     with:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
@@ -211,7 +211,7 @@ fixup scripts are configured per-direction via workflow inputs:
 
 ```yaml
 sync:
-  uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+  uses: warpdotdev/repo-sync/.github/workflows/sync.yml@main
   with:
     public_repo: warpdotdev/warp-public
     private_repo: warpdotdev/warp-internal
