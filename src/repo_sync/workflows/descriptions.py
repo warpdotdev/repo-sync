@@ -27,10 +27,22 @@ def parse_agent_output(raw_text: str) -> PRDescription | None:
     Expects the text to contain a TITLE: line followed by a DESCRIPTION:
     section.  Returns a PRDescription if both sections are found, or None
     otherwise.
+
+    Tolerates the agent wrapping its output in a Markdown code fence
+    (e.g. ```TITLE: ...``` or a ``` fence on its own line), which some
+    models tend to do despite the skill telling them not to.  Triple
+    backticks are stripped from the raw text before matching; single and
+    double backticks are left intact so inline code spans inside the
+    description are preserved.
     """
-    title_match = re.search(r"^TITLE:[ \t]*(.+)$", raw_text, re.MULTILINE)
+    # Strip all runs of three-or-more backticks (Markdown code fences).
+    # This handles both fences on their own line and fences that run on
+    # to the same line as TITLE:, which has been observed in practice.
+    cleaned = re.sub(r"`{3,}", "", raw_text)
+
+    title_match = re.search(r"^TITLE:[ \t]*(.+)$", cleaned, re.MULTILINE)
     desc_match = re.search(
-        r"^DESCRIPTION:[ \t]*(.*)", raw_text, re.MULTILINE | re.DOTALL
+        r"^DESCRIPTION:[ \t]*(.*)", cleaned, re.MULTILINE | re.DOTALL
     )
     if not title_match or not desc_match:
         return None

@@ -36,20 +36,19 @@ use the codebase in your working directory for additional context (e.g., to unde
 
 ### 3. produce output
 
-output **exactly** the following format, with no additional text before or after:
+the very first characters of your output must be `TITLE:`.  do **not** write any preamble, reasoning, acknowledgement, or explanation before the `TITLE:` line.  do **not** wrap your output in a Markdown code fence (triple backticks).  the output must look exactly like this (substituting your own title and description):
 
-```
-TITLE: <a short, descriptive PR title>
+    TITLE: Add retry logic to sync client
 
-DESCRIPTION:
-<a concise summary of what changed and why, based solely on the diff>
-```
+    DESCRIPTION:
+    Adds exponential backoff when the sync API returns 429.
 
 #### title guidelines
 
 - keep titles under 72 characters.
 - use imperative mood (e.g., "Add retry logic to sync client", not "Added retry logic").
 - be specific about what changed (e.g., "Fix off-by-one in pagination cursor" not "Fix bug").
+- the title itself must be plain text (no Markdown formatting, no surrounding backticks).
 
 #### description guidelines
 
@@ -59,6 +58,12 @@ DESCRIPTION:
 - if the diff is trivial (e.g., a single typo fix), keep the description to one sentence.
 - if the diff is very large, focus on the high-level functional changes rather than describing every detail.  organize by logical area.
 - do not include a list of every file changed -- focus on the functional impact.
+- Markdown is allowed **inside** the description body (e.g., inline `` `code` `` spans, bullet lists).  do not, however, wrap the entire `TITLE:`/`DESCRIPTION:` block in a code fence.
+
+#### common mistakes to avoid
+
+- do not prefix your output with "Based on my analysis...", "Here is the PR description:", or any similar preamble.  your output must begin with the literal characters `TITLE:`.
+- do not wrap the output in ```` ``` ```` fences.  the output is plain text, not a code block.
 
 ## what you do NOT do
 
