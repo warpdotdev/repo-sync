@@ -250,7 +250,8 @@ def cmd_run_sync(args: argparse.Namespace) -> None:
             source_repo=args.source_repo,
             public_repo=args.public_repo,
             private_repo=args.private_repo,
-            default_branch=args.default_branch,
+            source_default_branch=args.source_default_branch,
+            peer_default_branch=args.peer_default_branch,
             slack_webhook_url=args.slack_webhook_url,
             private_to_public_fixup_script=args.private_to_public_fixup_script,
             public_to_private_fixup_script=args.public_to_private_fixup_script,
@@ -419,7 +420,14 @@ def main() -> None:
     p.add_argument("--source-repo", required=True, help="Source repo (owner/name).")
     p.add_argument("--public-repo", required=True)
     p.add_argument("--private-repo", required=True)
-    p.add_argument("--default-branch", required=True)
+    p.add_argument(
+        "--source-default-branch", required=True,
+        help="Default branch of the source repo (used to enumerate unsynced commits).",
+    )
+    p.add_argument(
+        "--peer-default-branch", required=True,
+        help="Default branch of the peer (target) repo (used as the PR base for new sync stacks).",
+    )
     p.add_argument("--slack-webhook-url", default="")
     p.add_argument(
         "--private-to-public-fixup-script", default="",

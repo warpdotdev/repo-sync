@@ -739,7 +739,7 @@ def create_sync_prs(
     direction: str,
     branch_prefix: str,
     source_is_private: bool,
-    default_branch: str,
+    peer_default_branch: str,
     stack_top: str | None,
     slack_webhook_url: str = "",
     fixup_script: str = "",
@@ -749,12 +749,16 @@ def create_sync_prs(
 
     Implements the outer retry loop with progress-based termination and
     the per-commit idempotency guard.
+
+    ``peer_default_branch`` is the default branch of the peer (target) repo;
+    it is used as the PR base when there is no existing sync PR stack to
+    extend.
     """
     last_failure_sha = ""
     pr_desc_cache = _PrDescriptionCache()
 
     while True:
-        stack_base_branch = stack_top or default_branch
+        stack_base_branch = stack_top or peer_default_branch
         transient_failure = False
         failure_sha = ""
 
@@ -835,7 +839,8 @@ def run_sync(
     source_repo: str,
     public_repo: str,
     private_repo: str,
-    default_branch: str,
+    source_default_branch: str,
+    peer_default_branch: str,
     slack_webhook_url: str = "",
     private_to_public_fixup_script: str = "",
     public_to_private_fixup_script: str = "",
@@ -844,6 +849,12 @@ def run_sync(
     """Run the full sync workflow: watermark, commit enumeration, PR creation.
 
     Derives direction, peer repo, and source_is_private from the repo names.
+
+    ``source_default_branch`` is the default branch of the source repo (used
+    when enumerating unsynced commits via ``git log``).  ``peer_default_branch``
+    is the default branch of the peer repo (used as the PR base for the first
+    PR in a new sync stack).  These may differ when the two repos use
+    different default branch names (e.g. ``master`` vs ``main``).
     """
     source_is_private = source_repo == private_repo
     peer_repo = public_repo if source_is_private else private_repo
@@ -876,7 +887,7 @@ def run_sync(
 
     # Enumerate unsynced commits.
     unsynced = enumerate_unsynced_commits(
-        source_git, source_gh, direction, default_branch,
+        source_git, source_gh, direction, source_default_branch,
         SyncOrigin(repo=watermark.repo, sha=watermark.sha),
     )
     if not unsynced:
@@ -898,7 +909,7 @@ def run_sync(
         direction=direction,
         branch_prefix=branch_prefix,
         source_is_private=source_is_private,
-        default_branch=default_branch,
+        peer_default_branch=peer_default_branch,
         stack_top=stack_top,
         slack_webhook_url=slack_webhook_url,
         fixup_script=fixup_script,

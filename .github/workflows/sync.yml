@@ -89,13 +89,26 @@ jobs:
           git config --global user.name "warp-repo-sync[bot]"
           git config --global user.email "270220925+warp-repo-sync[bot]@users.noreply.github.com"
 
+      # Resolve the peer repo's default branch via the GitHub API rather
+      # than assuming it matches the source repo's default.  The two repos
+      # may use different default branch names (e.g. `master` vs `main`).
+      # The same value is used as the peer checkout ref and as the PR base
+      # for new sync stacks, so both paths stay in sync.
+      - name: Resolve peer default branch
+        id: peer_default
+        env:
+          PEER_REPO: ${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
+        run: |
+          branch=$(gh api "repos/${PEER_REPO}" --jq .default_branch)
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
       # Checkout the peer repo (always, to avoid conditional complexity).
       # The Python code exits early if there are no unsynced commits.
       - name: Checkout peer repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: ${{ github.repository == inputs.private_repo && inputs.public_repo || inputs.private_repo }}
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ steps.peer_default.outputs.branch }}
           path: peer
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
@@ -148,7 +161,8 @@ jobs:
             --source-repo "${{ github.repository }}" \
             --public-repo "${{ inputs.public_repo }}" \
             --private-repo "${{ inputs.private_repo }}" \
-            --default-branch "${{ github.event.repository.default_branch }}" \
+            --source-default-branch "${{ github.event.repository.default_branch }}" \
+            --peer-default-branch "${{ steps.peer_default.outputs.branch }}" \
             --slack-webhook-url "${{ inputs.slack_webhook_url }}" \
             --private-to-public-fixup-script "${{ inputs.private_to_public_fixup_script }}" \
             --public-to-private-fixup-script "${{ inputs.public_to_private_fixup_script }}" \
