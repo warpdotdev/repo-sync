@@ -42,7 +42,7 @@ jobs:
   # -----------------------------------------------------------------------
   sync:
     if: github.event_name == 'push'
-    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/sync.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -75,7 +75,7 @@ jobs:
        github.event.action == 'labeled' &&
        github.event.label.name == 'repo-sync:needs-restack' &&
        startsWith(github.event.pull_request.head.ref, 'repo-sync/'))
-    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/restack.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -94,7 +94,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.action != 'closed' &&
       startsWith(github.event.pull_request.head.ref, 'repo-sync/')
-    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/approve.yml@main
     with:
       public_repo: warpdotdev/warp-public
       private_repo: warpdotdev/warp-internal
@@ -107,7 +107,7 @@ jobs:
   # -----------------------------------------------------------------------
   escalation:
     if: github.event_name == 'schedule'
-    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@v1
+    uses: warpdotdev/repo-sync/.github/workflows/escalation.yml@main
     with:
       escalate_to: "@oncall-client-primary"
       escalate_after: "1h"
