@@ -88,6 +88,143 @@ class TestParseAgentOutput:
         assert desc is not None
         assert desc.body == "Fixed it."
 
+    def test_handles_opening_fence_on_same_line_as_title(self) -> None:
+        # Regression: the agent sometimes wraps its output in a code
+        # fence and runs the opening ``` onto the same line as TITLE:,
+        # which was observed in a failing CI run and previously caused
+        # `PR description agent produced no parseable output.`.
+        raw = (
+            "Based on my analysis of the diff...\n"
+            "```TITLE: Move SettingsFile flag from dogfood to preview\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Moves the flag to the preview list.\n"
+            "```\n"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert desc.title == "Move SettingsFile flag from dogfood to preview"
+        assert desc.body == "Moves the flag to the preview list."
+
+    def test_handles_opening_fence_on_own_line(self) -> None:
+        # The agent wraps the output in a code fence with the opening
+        # ``` on its own line (well-formed Markdown).
+        raw = (
+            "```\n"
+            "TITLE: Fix bug\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Fixed it.\n"
+            "```"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert desc.title == "Fix bug"
+        assert desc.body == "Fixed it."
+
+    def test_handles_opening_fence_with_language_hint(self) -> None:
+        # The agent wraps with ```text (or similar) as a language tag.
+        raw = (
+            "```text\n"
+            "TITLE: Fix bug\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Fixed it.\n"
+            "```"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert desc.title == "Fix bug"
+        assert desc.body == "Fixed it."
+
+    def test_preserves_fenced_code_block_in_body(self) -> None:
+        # Markdown code fences inside the description body must be
+        # preserved verbatim -- only outer wraps are stripped.
+        raw = (
+            "TITLE: Add new example\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Adds a Python snippet:\n"
+            "\n"
+            "```python\n"
+            "client.connect()\n"
+            "```\n"
+            "\n"
+            "Copy-paste it directly."
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert "```python\nclient.connect()\n```" in desc.body
+        assert desc.body.endswith("Copy-paste it directly.")
+
+    def test_preserves_trailing_fence_when_body_ends_with_code_block(
+        self,
+    ) -> None:
+        # Regression: if the body legitimately ends with a fenced code
+        # block (and the whole output is NOT wrapped in an outer fence),
+        # we must not strip the closing ``` of the inner block.
+        raw = (
+            "TITLE: Add example\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "See the code:\n"
+            "\n"
+            "```python\n"
+            "foo()\n"
+            "```"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        # The trailing ``` is part of the legitimate inner code block
+        # and must not be stripped.
+        assert desc.body.endswith("```")
+        assert "```python\nfoo()\n```" in desc.body
+
+    def test_strips_outer_fence_preserves_inner_fenced_code_block(
+        self,
+    ) -> None:
+        # The output is wrapped in an outer fence AND the body contains
+        # an inner code block.  The outer closing fence is stripped,
+        # the inner fences are preserved.
+        raw = (
+            "```\n"
+            "TITLE: Add new example\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Adds a Python snippet:\n"
+            "\n"
+            "```python\n"
+            "client.connect()\n"
+            "```\n"
+            "\n"
+            "Copy-paste it.\n"
+            "```"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert desc.title == "Add new example"
+        assert "```python\nclient.connect()\n```" in desc.body
+        # The body should end with the prose, not a stray closing fence.
+        assert desc.body.endswith("Copy-paste it.")
+
+    def test_handles_preamble_then_opening_fence(self) -> None:
+        # Preamble text followed by a well-formed opening fence on its
+        # own line, then TITLE:.
+        raw = (
+            "Let me analyze the diff.\n"
+            "\n"
+            "```\n"
+            "TITLE: Fix bug\n"
+            "\n"
+            "DESCRIPTION:\n"
+            "Fixed it.\n"
+            "```"
+        )
+        desc = parse_agent_output(raw)
+        assert desc is not None
+        assert desc.title == "Fix bug"
+        assert desc.body == "Fixed it."
+
 
 class TestPrivateToPublicFallback:
     """Tests for the private-to-public fallback description."""

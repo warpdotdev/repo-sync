@@ -27,15 +27,49 @@ def parse_agent_output(raw_text: str) -> PRDescription | None:
     Expects the text to contain a TITLE: line followed by a DESCRIPTION:
     section.  Returns a PRDescription if both sections are found, or None
     otherwise.
+
+    Tolerates the agent wrapping its output in a Markdown code fence
+    (e.g. ```TITLE: ...``` or a ``` fence on its own line), which some
+    models tend to do despite the skill telling them not to.  This is
+    handled by (1) allowing optional whitespace/backticks immediately
+    before the `TITLE:`/`DESCRIPTION:` keywords and on their trailing
+    ends, and (2) stripping a trailing closing fence from the body only
+    when an opening fence was detected before the TITLE: line.  Code
+    fences *inside* the description body are always preserved; a body
+    that legitimately ends with a fenced code block (without an outer
+    wrap) keeps its closing fence intact.
     """
-    title_match = re.search(r"^TITLE:[ \t]*(.+)$", raw_text, re.MULTILINE)
+    # The `[ \t`]*` prefixes tolerate an opening fence that runs on to
+    # the same line as the keyword (e.g. ```TITLE:).  We intentionally
+    # do not strip backticks from the raw text, since the description
+    # body may legitimately contain fenced code blocks.
+    title_match = re.search(
+        r"(?:^|\n)(?P<prefix>[ \t`]*)TITLE:[ \t]*(?P<title>.+?)[ \t`]*$",
+        raw_text,
+        re.MULTILINE,
+    )
     desc_match = re.search(
-        r"^DESCRIPTION:[ \t]*(.*)", raw_text, re.MULTILINE | re.DOTALL
+        r"(?:^|\n)[ \t`]*DESCRIPTION:[ \t]*(.*)",
+        raw_text,
+        re.MULTILINE | re.DOTALL,
     )
     if not title_match or not desc_match:
         return None
-    title = title_match.group(1).strip()
-    body = desc_match.group(1).strip()
+    title = title_match.group("title").strip()
+    body = desc_match.group(1)
+    # Detect an opening fence before TITLE: -- either on an earlier line
+    # (covered by `raw_text[:title_match.start()]`) or run on to the
+    # TITLE: line itself (covered by the matched `prefix` group).  If
+    # one was present, strip a matching trailing fence from the body.
+    # Otherwise leave any trailing fence alone, so a body that legit-
+    # imately ends with a fenced code block is preserved verbatim.
+    wrapped_in_fence = (
+        "```" in raw_text[: title_match.start()]
+        or "```" in title_match.group("prefix")
+    )
+    if wrapped_in_fence:
+        body = re.sub(r"\n[ \t]*`{3,}[ \t]*\s*\Z", "", body)
+    body = body.strip()
     if not title or not body:
         return None
     return PRDescription(title=title, body=body)
