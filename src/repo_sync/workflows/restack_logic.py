@@ -196,14 +196,16 @@ def _handle_restack_conflict(
         agent_context=f"Rebase conflict on branch {head_branch}.",
     )
 
+    # Add the conflict label before pushing so that the synchronize event
+    # fires with the label already present, allowing CI to run on the
+    # resolution commit.
+    add_conflict_label(gh, pr_number)
+
     # Push the result (resolved or with markers).
     git.push("origin", head_branch, force_with_lease=True)
 
     # Update PR base to the default branch.
     gh.update_pr_base(pr_number, default_branch)
-
-    # Label, conflict trailer, reviewer assignment.
-    add_conflict_label(gh, pr_number)
 
     # Append Repo-Sync-Conflict trailer to PR body.
     current_body = gh._run(
