@@ -145,18 +145,38 @@ if ! echo "$EXISTING_COMMITS_RAW" | jq -e 'type == "array" and length > 0' > /de
   IS_EMPTY="true"
 fi
 
+# NEW_BRANCH=true means the bootstrap push will create the target branch on
+# the remote for the first time.  This covers two cases:
+#   1. The public repo is entirely empty (no commits on any branch).
+#   2. The public repo has content, but not on ${DEFAULT_BRANCH} (e.g. it
+#      only has `main` while ${DEFAULT_BRANCH}=`master`).  In this case we
+#      create an orphan branch so the bootstrap commit is a clean root
+#      commit, not a child of whatever is on the other branch.
+NEW_BRANCH="false"
+
 if [ "$IS_EMPTY" = "true" ]; then
   echo "Public repo is empty.  Creating initial commit."
   pushd "$WORK_DIR" > /dev/null
   git init -b "${DEFAULT_BRANCH}"
   git remote add origin "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git"
+  NEW_BRANCH="true"
 else
-  echo "Public repo has existing content.  Cloning and replacing tree."
   git clone "https://x-access-token:${TOKEN}@github.com/${PUBLIC_REPO}.git" "$WORK_DIR"
   pushd "$WORK_DIR" > /dev/null
-  git checkout "${DEFAULT_BRANCH}"
-  # Remove all existing content (but keep .git/).
-  git rm -rf --quiet . 2>/dev/null || true
+  if git show-ref --verify --quiet "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+    echo "Public repo has an existing '${DEFAULT_BRANCH}' branch.  Cloning and replacing tree."
+    git checkout "${DEFAULT_BRANCH}"
+    # Remove all existing content (but keep .git/).
+    git rm -rf --quiet . 2>/dev/null || true
+  else
+    echo "Public repo has no '${DEFAULT_BRANCH}' branch.  Creating orphan branch for a fresh root commit."
+    # --orphan creates a new unborn branch with no parent; the working tree
+    # and index still contain the previous HEAD's files, so we clear them
+    # before copying in the clean snapshot.
+    git checkout --orphan "${DEFAULT_BRANCH}"
+    git rm -rf --quiet . 2>/dev/null || true
+    NEW_BRANCH="true"
+  fi
 fi
 
 # Copy the clean snapshot into the working tree.
@@ -185,7 +205,8 @@ echo "  ${WORK_DIR}"
 echo ""
 echo "--- Review the changes: ---"
 echo ""
-if [ "$IS_EMPTY" = "true" ]; then
+if [ "$NEW_BRANCH" = "true" ]; then
+  # No parent commit to diff against; show the tree of the bootstrap commit.
   echo "  cd ${WORK_DIR} && git log -1"
   echo "  cd ${WORK_DIR} && git diff --stat HEAD"
 else
@@ -196,7 +217,7 @@ fi
 echo ""
 echo "--- Push (after reviewing): ---"
 echo ""
-if [ "$IS_EMPTY" = "true" ]; then
+if [ "$NEW_BRANCH" = "true" ]; then
   echo "  cd ${WORK_DIR} && git push -u origin ${DEFAULT_BRANCH}"
 else
   echo "  cd ${WORK_DIR} && git push origin ${DEFAULT_BRANCH}"
