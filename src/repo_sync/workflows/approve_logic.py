@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -108,17 +109,63 @@ def check_mergeability(
     return "unknown"
 
 
-def approve_and_auto_merge(gh: GhOps, pr_number: int) -> None:
-    """Approve a clean PR and enable auto-merge."""
+# Retry parameters for enabling auto-merge.  Enabling auto-merge can fail
+# with a transient "Base branch was modified" GraphQL error when another
+# PR merges into the base branch concurrently with our request.  Retrying
+# a few times with a short delay is enough to recover and avoids the
+# merge queue getting stuck waiting for the next event to re-trigger this
+# workflow.
+_AUTO_MERGE_MAX_ATTEMPTS = 3
+_AUTO_MERGE_RETRY_DELAY_SECONDS = 10
+_AUTO_MERGE_RETRYABLE_ERROR = "Base branch was modified"
+
+
+def approve_and_auto_merge(
+    gh: GhOps,
+    pr_number: int,
+    max_attempts: int = _AUTO_MERGE_MAX_ATTEMPTS,
+    retry_delay: int = _AUTO_MERGE_RETRY_DELAY_SECONDS,
+) -> None:
+    """Approve a clean PR and enable auto-merge.
+
+    Enabling auto-merge is retried on the transient "Base branch was
+    modified" GraphQL error, which happens when the base branch is updated
+    concurrently with our request (e.g., another sync PR in the queue
+    merging at the same moment).  Retrying minimizes the chance of the
+    queue getting stuck.
+    """
     gh._run([
         "pr", "review", str(pr_number), "--repo", gh.repo,
         "--approve", "--body", "Clean sync — no conflicts.",
     ], check=False)
 
-    gh._run([
+    merge_args = [
         "pr", "merge", str(pr_number), "--repo", gh.repo,
         "--auto", "--squash",
-    ], check=False)
+    ]
+    for attempt in range(1, max_attempts + 1):
+        try:
+            gh._run(merge_args)
+            return
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            is_retryable = _AUTO_MERGE_RETRYABLE_ERROR in stderr
+            if not is_retryable or attempt == max_attempts:
+                # Match the original check=False behavior: log a warning and
+                # return rather than raising.  The escalation workflow will
+                # eventually catch a PR stuck without auto-merge enabled.
+                logger.warning(
+                    "gh %s failed (rc=%d) on attempt %d/%d: %s",
+                    " ".join(merge_args), exc.returncode,
+                    attempt, max_attempts, stderr,
+                )
+                return
+            logger.info(
+                "Enabling auto-merge failed due to concurrent base-branch "
+                "update (attempt %d/%d).  Retrying in %ds...",
+                attempt, max_attempts, retry_delay,
+            )
+            time.sleep(retry_delay)
 
 
 def handle_conflict(
