@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import subprocess
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from repo_sync.errors import VerboseCalledProcessError
 
 
 @dataclass
@@ -43,14 +42,7 @@ class GitOps:
             env=env,
         )
         if check and result.returncode != 0:
-            logger.error(
-                "git %s failed (exit %d).\nstdout: %s\nstderr: %s",
-                " ".join(args),
-                result.returncode,
-                result.stdout.strip()[:2000],
-                result.stderr.strip()[:2000],
-            )
-            raise subprocess.CalledProcessError(
+            raise VerboseCalledProcessError(
                 result.returncode, ["git", *args], result.stdout, result.stderr
             )
         return CommandResult(
@@ -260,7 +252,7 @@ class GitOps:
                 "git archive %s failed (exit %d): %s",
                 ref, proc.returncode, stderr.decode(errors="replace").strip(),
             )
-            raise subprocess.CalledProcessError(
+            raise VerboseCalledProcessError(
                 proc.returncode, ["git", "archive", ref],
                 b"", stderr,
             )
@@ -353,7 +345,7 @@ class GitOps:
             env=env,
         )
         if result.returncode != 0:
-            raise subprocess.CalledProcessError(
+            raise VerboseCalledProcessError(
                 result.returncode,
                 ["git", "diff", ref_a, ref_b],
                 result.stdout,
