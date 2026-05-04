@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,6 +43,13 @@ class GitOps:
             env=env,
         )
         if check and result.returncode != 0:
+            logger.error(
+                "git %s failed (exit %d).\nstdout: %s\nstderr: %s",
+                " ".join(args),
+                result.returncode,
+                result.stdout.strip()[:2000],
+                result.stderr.strip()[:2000],
+            )
             raise subprocess.CalledProcessError(
                 result.returncode, ["git", *args], result.stdout, result.stderr
             )
@@ -282,9 +292,13 @@ class GitOps:
             args.append("--allow-empty")
         self._run(args)
 
-    def commit_amend_message(self, *messages: str) -> None:
+    def commit_amend_message(
+        self, *messages: str, allow_empty: bool = False
+    ) -> None:
         """Amend the current commit's message."""
         args = ["commit", "--amend"]
+        if allow_empty:
+            args.append("--allow-empty")
         for msg in messages:
             args.extend(["-m", msg])
         self._run(args)
