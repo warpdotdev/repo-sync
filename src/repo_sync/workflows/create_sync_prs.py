@@ -679,7 +679,12 @@ def _sync_public_to_private(
         )
     else:
         current_msg = peer_git.commit_message("HEAD")
-        peer_git.commit_amend_message(current_msg, origin_trailer)
+        # The cherry-pick may produce an empty commit (if the changes are
+        # already present in the target repo).  Pass allow_empty so that
+        # the amend does not fail in that case.
+        peer_git.commit_amend_message(
+            current_msg, origin_trailer, allow_empty=True
+        )
 
     # Build the PR description (identical for conflict and non-conflict).
     source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))

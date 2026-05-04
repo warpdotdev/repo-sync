@@ -52,6 +52,13 @@ class GhOps:
         )
         if result.returncode != 0:
             if check:
+                logger.error(
+                    "gh %s failed (exit %d).\nstdout: %s\nstderr: %s",
+                    " ".join(args),
+                    result.returncode,
+                    result.stdout.strip()[:2000],
+                    result.stderr.strip()[:2000],
+                )
                 raise subprocess.CalledProcessError(
                     result.returncode,
                     ["gh", *args],
