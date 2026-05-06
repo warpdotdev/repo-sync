@@ -285,18 +285,20 @@ class GhOps:
         lookup, avoiding false-positive text matches from gh pr list --search.
         Filters for merged PRs to avoid picking up open/closed PRs that happen
         to include the same commit.
+
+        Raises subprocess.CalledProcessError if the GitHub API call fails.
+        Callers in non-critical paths should catch this and degrade gracefully;
+        callers in safety-critical paths (e.g. loop detection) must let it
+        propagate to abort the workflow.
         """
-        try:
-            output = self._run(
-                [
-                    "api",
-                    f"repos/{self.repo}/commits/{sha}/pulls",
-                    "--jq",
-                    '[.[] | select(.merged_at != null)] | .[0]',
-                ],
-            )
-        except subprocess.CalledProcessError:
-            return None
+        output = self._run(
+            [
+                "api",
+                f"repos/{self.repo}/commits/{sha}/pulls",
+                "--jq",
+                '[.[] | select(.merged_at != null)] | .[0]',
+            ],
+        )
         if not output or output == "null":
             return None
         pr = json.loads(output)

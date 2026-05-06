@@ -9,7 +9,10 @@ Covers VALIDATION.md infinite loop prevention cases:
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock
+
+import pytest
 
 from repo_sync.stack.gh_ops import GhOps, PullRequest
 from repo_sync.stack.git_ops import GitOps
@@ -98,6 +101,22 @@ class TestIsSyncOriginated:
         gh.get_pr_for_commit.return_value = None
 
         assert is_sync_originated(git, gh, "directpush") is False
+
+    def test_api_failure_propagates_when_trailer_present(self) -> None:
+        """An API failure during PR lookup aborts rather than failing-open."""
+        git = MagicMock(spec=GitOps)
+        git.commit_message.return_value = (
+            "sync commit\n\n"
+            "Repo-Sync-Origin: warpdotdev/warp-internal@abc123"
+        )
+
+        gh = MagicMock(spec=GhOps)
+        gh.get_pr_for_commit.side_effect = subprocess.CalledProcessError(
+            1, ["gh", "api", "repos/org/repo/commits/abc123/pulls"]
+        )
+
+        with pytest.raises(subprocess.CalledProcessError):
+            is_sync_originated(git, gh, "abc123")
 
     def test_public_to_private_sync_branch_recognized(self) -> None:
         """Public-to-private sync branches are also recognized."""

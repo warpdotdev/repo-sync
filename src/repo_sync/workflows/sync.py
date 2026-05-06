@@ -12,6 +12,7 @@ library's GitOps/GhOps wrappers, which can be replaced in tests.
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass
 
 from repo_sync.stack.branches import check_idempotency
@@ -94,9 +95,17 @@ def enumerate_unsynced_commits(
     # Filter out sync-originated commits.
     result = []
     for sha in all_commits:
-        if is_sync_originated(source_git, source_gh, sha):
-            logger.info("Skipping sync-originated commit %s.", sha[:12])
-            continue
+        try:
+            if is_sync_originated(source_git, source_gh, sha):
+                logger.info("Skipping sync-originated commit %s.", sha[:12])
+                continue
+        except subprocess.CalledProcessError:
+            logger.error(
+                "GitHub API failure during loop detection for commit %s. "
+                "Aborting sync to avoid creating an infinite loop.",
+                sha[:12],
+            )
+            raise
         result.append(sha)
 
     return result
@@ -146,7 +155,15 @@ def build_public_to_private_description(
     direct pushes.
     """
     source_repo_name = source_repo.split("/")[-1]
-    source_pr = source_gh.get_pr_for_commit(source_sha)
+    try:
+        source_pr = source_gh.get_pr_for_commit(source_sha)
+    except subprocess.CalledProcessError:
+        logger.warning(
+            "GitHub API error looking up PR for commit %s; "
+            "falling back to commit-based description.",
+            source_sha[:12],
+        )
+        source_pr = None
 
     if source_pr is not None:
         return public_to_private_from_pr(
@@ -180,7 +197,15 @@ def determine_sync_reviewer(
     Tries the merger of the source PR first, then the commit author (via
     GitHub API), then the fallback team.
     """
-    source_pr = source_gh.get_pr_for_commit(source_sha)
+    try:
+        source_pr = source_gh.get_pr_for_commit(source_sha)
+    except subprocess.CalledProcessError:
+        logger.warning(
+            "GitHub API error looking up PR for commit %s; "
+            "falling back to commit author or team for reviewer.",
+            source_sha[:12],
+        )
+        source_pr = None
     pr_number = source_pr.number if source_pr else None
 
     # For direct pushes (no source PR), look up the commit author via the API.

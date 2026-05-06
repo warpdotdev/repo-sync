@@ -39,9 +39,15 @@ def is_sync_originated(
         return False
 
     # Check 2: was the commit merged from a repo-sync/ branch?
+    #
+    # get_pr_for_commit raises on API failure, which intentionally aborts
+    # the sync run.  We must not fail-open here: if we cannot verify the
+    # PR branch, we cannot safely determine whether this commit is
+    # sync-originated.
     pr = gh.get_pr_for_commit(commit_sha)
     if pr is None:
-        # No PR found -- this could be a direct push with a spoofed trailer.
+        # API succeeded but no merged PR was found — this could be a
+        # direct push with a spoofed trailer.
         return False
 
     if not is_sync_branch(pr.head_branch):
