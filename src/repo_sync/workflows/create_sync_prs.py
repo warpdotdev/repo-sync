@@ -156,11 +156,21 @@ def _mirror_lfs_objects(
     if not pointers:
         return
 
-    oids = sorted({pointer.oid for pointer in pointers})
+    paths_by_oid: dict[str, list[str]] = {}
+    for pointer in pointers:
+        paths_by_oid.setdefault(pointer.oid, []).append(pointer.path)
+
+    oids = sorted(paths_by_oid)
     logger.info(
         "Mirroring %d Git LFS object(s) referenced by %d changed pointer file(s).",
         len(oids), len(pointers),
     )
+    for oid in oids:
+        logger.info(
+            "Mirroring Git LFS object %s for path(s): %s.",
+            oid,
+            ", ".join(sorted(paths_by_oid[oid])),
+        )
 
     source_git.lfs_fetch_ref("origin", source_ref)
 
