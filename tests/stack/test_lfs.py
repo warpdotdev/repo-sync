@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repo_sync.stack.lfs import LfsPointer, collect_lfs_pointers, parse_lfs_pointer
 
 
@@ -50,3 +52,21 @@ def test_collect_lfs_pointers_filters_to_changed_paths(tmp_path: Path) -> None:
     )
 
     assert pointers == [LfsPointer(path="asset.bin", oid=OID, size=1234)]
+
+
+def test_collect_lfs_pointers_raises_read_errors_for_changed_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "asset.bin").write_bytes(_pointer())
+    original_read_bytes = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        if path.name == "asset.bin":
+            raise PermissionError("cannot read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    with pytest.raises(PermissionError):
+        collect_lfs_pointers(str(tmp_path), ["asset.bin"])

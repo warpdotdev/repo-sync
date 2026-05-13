@@ -150,9 +150,22 @@ def _mirror_lfs_objects(
     source_ref: str,
     snapshot_dir: str,
     changed_paths: list[str],
+    attributes_git: GitOps,
+    attributes_ref: str,
 ) -> None:
     """Mirror LFS objects referenced by changed pointer files in a snapshot."""
     pointers = collect_lfs_pointers(snapshot_dir, changed_paths)
+    if not pointers:
+        return
+    lfs_tracked_paths = attributes_git.lfs_tracked_paths(
+        sorted({pointer.path for pointer in pointers}),
+        source_ref=attributes_ref,
+    )
+    pointers = [
+        pointer
+        for pointer in pointers
+        if pointer.path in lfs_tracked_paths
+    ]
     if not pointers:
         return
 
@@ -172,7 +185,14 @@ def _mirror_lfs_objects(
             ", ".join(sorted(paths_by_oid[oid])),
         )
 
-    source_git.lfs_fetch_ref("origin", source_ref)
+    fetch_paths = sorted({pointer.path for pointer in pointers})
+    source_git.lfs_fetch_ref("origin", source_ref, include_paths=fetch_paths)
+    missing_oids = source_git.lfs_missing_oids(oids)
+    if missing_oids:
+        raise PermanentSyncError(
+            "Missing Git LFS object(s) after fetch: "
+            + ", ".join(sorted(missing_oids))
+        )
 
     target_remote = f"repo_sync_lfs_target_{os.getpid()}"
     peer_url = peer_git.remote_url("origin")
@@ -589,6 +609,8 @@ def _sync_private_to_public(
             source_ref=source_sha,
             snapshot_dir=snapshot_dir,
             changed_paths=changed_paths,
+            attributes_git=GitOps(diff_repo),
+            attributes_ref="HEAD",
         )
 
         # Build the PR description (identical for conflict and non-conflict).
@@ -743,6 +765,8 @@ def _sync_public_to_private(
             source_ref=source_sha,
             snapshot_dir=lfs_snapshot_dir,
             changed_paths=changed_paths,
+            attributes_git=source_git,
+            attributes_ref=source_sha,
         )
     finally:
         shutil.rmtree(lfs_snapshot_dir, ignore_errors=True)

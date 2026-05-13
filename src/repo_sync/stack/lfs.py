@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -63,15 +64,28 @@ def collect_lfs_pointers(
     """Collect LFS pointers under root, optionally restricted to relative paths."""
     candidates = _candidate_paths(root, paths)
     pointers: list[LfsPointer] = []
+    fail_on_read_error = paths is not None
 
     for relpath, fullpath in candidates:
         try:
-            if not os.path.isfile(fullpath) or os.path.islink(fullpath):
-                continue
-            if os.path.getsize(fullpath) > _MAX_POINTER_BYTES:
+            path_stat = os.lstat(fullpath)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if fail_on_read_error:
+                raise
+            continue
+
+        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+            continue
+
+        try:
+            if path_stat.st_size > _MAX_POINTER_BYTES:
                 continue
             data = Path(fullpath).read_bytes()
         except OSError:
+            if fail_on_read_error:
+                raise
             continue
 
         pointer = parse_lfs_pointer(data, relpath)

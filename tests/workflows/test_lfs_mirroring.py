@@ -6,10 +6,11 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from pytest import LogCaptureFixture
 
 from repo_sync.stack.git_ops import GitOps
-from repo_sync.workflows.create_sync_prs import _mirror_lfs_objects
+from repo_sync.workflows.create_sync_prs import PermanentSyncError, _mirror_lfs_objects
 
 
 OID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -33,7 +34,10 @@ def test_mirror_lfs_objects_pushes_changed_pointer_oids(
 
     source_git = MagicMock(spec=GitOps)
     peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
     peer_git.remote_url.return_value = "https://github.com/org/peer.git"
+    attributes_git.lfs_tracked_paths.return_value = {"asset.bin"}
+    source_git.lfs_missing_oids.return_value = []
     caplog.set_level(logging.INFO, logger="repo_sync.workflows.create_sync_prs")
 
     with patch("repo_sync.workflows.create_sync_prs.os.getpid", return_value=42):
@@ -43,10 +47,21 @@ def test_mirror_lfs_objects_pushes_changed_pointer_oids(
             source_ref="abc123",
             snapshot_dir=str(tmp_path),
             changed_paths=["asset.bin"],
+            attributes_git=attributes_git,
+            attributes_ref="attrs-ref",
         )
 
     remote = "repo_sync_lfs_target_42"
-    source_git.lfs_fetch_ref.assert_called_once_with("origin", "abc123")
+    attributes_git.lfs_tracked_paths.assert_called_once_with(
+        ["asset.bin"],
+        source_ref="attrs-ref",
+    )
+    source_git.lfs_fetch_ref.assert_called_once_with(
+        "origin",
+        "abc123",
+        include_paths=["asset.bin"],
+    )
+    source_git.lfs_missing_oids.assert_called_once_with([OID])
     peer_git.remote_url.assert_called_once_with("origin")
     source_git.remote_add_or_update.assert_called_once_with(
         remote,
@@ -62,6 +77,7 @@ def test_mirror_lfs_objects_skips_when_no_changed_pointer(tmp_path: Path) -> Non
     (tmp_path / "ordinary.txt").write_text("hello\n", encoding="utf-8")
     source_git = MagicMock(spec=GitOps)
     peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
 
     _mirror_lfs_objects(
         source_git=source_git,
@@ -69,9 +85,13 @@ def test_mirror_lfs_objects_skips_when_no_changed_pointer(tmp_path: Path) -> Non
         source_ref="abc123",
         snapshot_dir=str(tmp_path),
         changed_paths=["ordinary.txt"],
+        attributes_git=attributes_git,
+        attributes_ref="attrs-ref",
     )
 
+    attributes_git.lfs_tracked_paths.assert_not_called()
     source_git.lfs_fetch_ref.assert_not_called()
+    source_git.lfs_missing_oids.assert_not_called()
     peer_git.remote_url.assert_not_called()
     source_git.remote_add_or_update.assert_not_called()
     source_git.lfs_push_oids.assert_not_called()
@@ -93,7 +113,10 @@ def test_mirror_lfs_objects_does_not_push_private_stripped_pointer(
     snapshot.joinpath("asset.bin").write_text(_pointer(OID), encoding="utf-8")
     source_git = MagicMock(spec=GitOps)
     peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
     peer_git.remote_url.return_value = "https://github.com/org/public.git"
+    attributes_git.lfs_tracked_paths.return_value = {"asset.bin"}
+    source_git.lfs_missing_oids.return_value = []
 
     with patch("repo_sync.workflows.create_sync_prs.os.getpid", return_value=42):
         _mirror_lfs_objects(
@@ -102,8 +125,75 @@ def test_mirror_lfs_objects_does_not_push_private_stripped_pointer(
             source_ref="abc123",
             snapshot_dir=str(snapshot),
             changed_paths=["asset.bin", "private/secret.bin"],
+            attributes_git=attributes_git,
+            attributes_ref="attrs-ref",
         )
 
     remote = "repo_sync_lfs_target_42"
+    source_git.lfs_fetch_ref.assert_called_once_with(
+        "origin",
+        "abc123",
+        include_paths=["asset.bin"],
+    )
     source_git.lfs_push_oids.assert_called_once_with(remote, [OID])
     assert PRIVATE_OID not in source_git.lfs_push_oids.call_args.args[1]
+
+
+def test_mirror_lfs_objects_skips_pointer_shaped_non_lfs_file(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "looks-like-pointer.txt").write_text(
+        _pointer(PRIVATE_OID),
+        encoding="utf-8",
+    )
+    source_git = MagicMock(spec=GitOps)
+    peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
+    attributes_git.lfs_tracked_paths.return_value = set()
+
+    _mirror_lfs_objects(
+        source_git=source_git,
+        peer_git=peer_git,
+        source_ref="abc123",
+        snapshot_dir=str(tmp_path),
+        changed_paths=["looks-like-pointer.txt"],
+        attributes_git=attributes_git,
+        attributes_ref="attrs-ref",
+    )
+
+    attributes_git.lfs_tracked_paths.assert_called_once_with(
+        ["looks-like-pointer.txt"],
+        source_ref="attrs-ref",
+    )
+    source_git.lfs_fetch_ref.assert_not_called()
+    source_git.lfs_missing_oids.assert_not_called()
+    source_git.lfs_push_oids.assert_not_called()
+
+
+def test_mirror_lfs_objects_fails_when_fetched_object_is_missing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "asset.bin").write_text(_pointer(OID), encoding="utf-8")
+    source_git = MagicMock(spec=GitOps)
+    peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
+    attributes_git.lfs_tracked_paths.return_value = {"asset.bin"}
+    source_git.lfs_missing_oids.return_value = [OID]
+
+    with pytest.raises(PermanentSyncError):
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref="abc123",
+            snapshot_dir=str(tmp_path),
+            changed_paths=["asset.bin"],
+            attributes_git=attributes_git,
+            attributes_ref="attrs-ref",
+        )
+
+    source_git.lfs_fetch_ref.assert_called_once_with(
+        "origin",
+        "abc123",
+        include_paths=["asset.bin"],
+    )
+    source_git.lfs_push_oids.assert_not_called()
