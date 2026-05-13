@@ -322,6 +322,14 @@ class GitOps:
         else:
             self._run(["remote", "add", name, url])
 
+    def remote_remove(self, name: str) -> None:
+        """Remove a remote if it exists."""
+        self._run(["remote", "remove", name], check=False)
+
+    def remote_url(self, name: str) -> str:
+        """Return the configured URL for a remote."""
+        return self._run(["remote", "get-url", name]).stdout
+
     def log_shas(self, ref: str = "HEAD") -> list[str]:
         """Return all commit SHAs reachable from ref (newest first)."""
         result = self._run(["log", "--format=%H", ref])
@@ -352,3 +360,54 @@ class GitOps:
                 result.stderr,
             )
         return result.stdout.decode("utf-8", errors="replace").strip()
+
+    def diff_name_only(self, ref_a: str, ref_b: str) -> list[str]:
+        """Return changed paths between two refs."""
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "-z", ref_a, ref_b],
+            cwd=self.repo_dir,
+            capture_output=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                ["git", "diff", "--name-only", "-z", ref_a, ref_b],
+                result.stdout,
+                result.stderr,
+            )
+        if not result.stdout:
+            return []
+        return [
+            path
+            for path in result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+            if path
+        ]
+
+    def lfs_fetch_ref(self, remote: str, ref: str) -> None:
+        """Fetch LFS objects referenced by a ref from a remote."""
+        self._run(["lfs", "fetch", remote, ref])
+
+    def lfs_push_oids(self, remote: str, oids: list[str]) -> None:
+        """Push specific LFS object IDs to a remote."""
+        if not oids:
+            return
+
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        input_text = "".join(f"{oid}\n" for oid in oids)
+        result = subprocess.run(
+            ["git", "lfs", "push", "--object-id", remote, "--stdin"],
+            cwd=self.repo_dir,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                ["git", "lfs", "push", "--object-id", remote, "--stdin"],
+                result.stdout,
+                result.stderr,
+            )

@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
+from repo_sync.stack.lfs import collect_lfs_pointers
 from repo_sync.stack.trailers import (
     SyncOrigin,
     append_trailer,
@@ -141,6 +142,35 @@ def _run_fixup_script(script_path: str, working_dir: str) -> bool:
     except Exception:
         logger.error("Fixup script %s raised an exception.", script_path, exc_info=True)
         return False
+
+
+def _mirror_lfs_objects(
+    source_git: GitOps,
+    peer_git: GitOps,
+    source_ref: str,
+    snapshot_dir: str,
+    changed_paths: list[str],
+) -> None:
+    """Mirror LFS objects referenced by changed pointer files in a snapshot."""
+    pointers = collect_lfs_pointers(snapshot_dir, changed_paths)
+    if not pointers:
+        return
+
+    oids = sorted({pointer.oid for pointer in pointers})
+    logger.info(
+        "Mirroring %d Git LFS object(s) referenced by %d changed pointer file(s).",
+        len(oids), len(pointers),
+    )
+
+    source_git.lfs_fetch_ref("origin", source_ref)
+
+    target_remote = f"repo_sync_lfs_target_{os.getpid()}"
+    peer_url = peer_git.remote_url("origin")
+    source_git.remote_add_or_update(target_remote, peer_url)
+    try:
+        source_git.lfs_push_oids(target_remote, oids)
+    finally:
+        source_git.remote_remove(target_remote)
 
 
 # Docker image for the PR description agent.  Built locally by the sync
@@ -473,6 +503,7 @@ def _sync_private_to_public(
         return False  # Empty diff — all changes were internal-only.
 
     snapshot_dir, prev_snapshot_dir, diff_repo, patch_file, diff_commit = diff_result
+    changed_paths = GitOps(diff_repo).diff_name_only("HEAD~1", "HEAD")
 
     try:
         # Apply the delta to the peer repo by cherry-picking from the temp repo.
@@ -542,6 +573,13 @@ def _sync_private_to_public(
             )
         else:
             peer_git.commit_amend_message("repo-sync: sync from private", origin_trailer)
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref=source_sha,
+            snapshot_dir=snapshot_dir,
+            changed_paths=changed_paths,
+        )
 
         # Build the PR description (identical for conflict and non-conflict).
         if pr_desc_cache.source_sha == source_sha:
@@ -626,6 +664,7 @@ def _sync_public_to_private(
     Returns True if a PR was created.
     Raises TransientSyncError on base-branch-deleted failures.
     """
+    changed_paths = source_git.diff_name_only(f"{source_sha}^", source_sha)
     # Add the source repo as a remote.  Use the absolute path because
     # peer_git runs with cwd=peer_repo_dir, so a relative path would
     # resolve to the wrong location.
@@ -685,6 +724,18 @@ def _sync_public_to_private(
         peer_git.commit_amend_message(
             current_msg, origin_trailer, allow_empty=True
         )
+    lfs_snapshot_dir = tempfile.mkdtemp(prefix=f"repo-sync-lfs-{short_sha}-")
+    try:
+        source_git.archive_to_dir(source_sha, lfs_snapshot_dir)
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref=source_sha,
+            snapshot_dir=lfs_snapshot_dir,
+            changed_paths=changed_paths,
+        )
+    finally:
+        shutil.rmtree(lfs_snapshot_dir, ignore_errors=True)
 
     # Build the PR description (identical for conflict and non-conflict).
     source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
