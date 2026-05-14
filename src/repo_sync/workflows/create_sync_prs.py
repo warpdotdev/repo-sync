@@ -154,7 +154,12 @@ def _mirror_lfs_objects(
     attributes_ref: str,
 ) -> None:
     """Mirror LFS objects referenced by changed pointer files in a snapshot."""
-    pointers = collect_lfs_pointers(snapshot_dir, changed_paths)
+    scan_paths = None if _lfs_attributes_changed(changed_paths) else changed_paths
+    pointers = collect_lfs_pointers(
+        snapshot_dir,
+        scan_paths,
+        fail_on_read_error=True,
+    )
     if not pointers:
         return
     lfs_tracked_paths = attributes_git.lfs_tracked_paths(
@@ -186,7 +191,7 @@ def _mirror_lfs_objects(
         )
 
     fetch_paths = sorted({pointer.path for pointer in pointers})
-    source_git.lfs_fetch_ref("origin", source_ref, include_paths=fetch_paths)
+    source_git.lfs_fetch_paths(source_ref, fetch_paths)
     missing_oids = source_git.lfs_missing_oids(oids)
     if missing_oids:
         raise PermanentSyncError(
@@ -201,6 +206,14 @@ def _mirror_lfs_objects(
         source_git.lfs_push_oids(target_remote, oids)
     finally:
         source_git.remote_remove(target_remote)
+
+
+def _lfs_attributes_changed(changed_paths: list[str]) -> bool:
+    """Return True when changed paths may affect LFS tracking rules."""
+    return any(
+        path == ".gitattributes" or path.endswith("/.gitattributes")
+        for path in changed_paths
+    )
 
 
 # Docker image for the PR description agent.  Built locally by the sync

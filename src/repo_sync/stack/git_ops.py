@@ -427,18 +427,25 @@ class GitOps:
                 tracked_paths.add(path)
         return tracked_paths
 
-    def lfs_fetch_ref(
-        self,
-        remote: str,
-        ref: str,
-        include_paths: list[str] | None = None,
-    ) -> None:
-        """Fetch LFS objects referenced by a ref from a remote."""
-        args = ["lfs", "fetch"]
-        if include_paths:
-            args.append(f"--include={','.join(include_paths)}")
-        args.extend([remote, ref])
-        self._run(args)
+    def lfs_fetch_paths(self, ref: str, paths: list[str]) -> None:
+        """Fetch LFS objects for exact paths at a ref."""
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        for path in paths:
+            result = subprocess.run(
+                ["git", "cat-file", "--filters", f"{ref}:{path}"],
+                cwd=self.repo_dir,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            if result.returncode != 0:
+                raise VerboseCalledProcessError(
+                    result.returncode,
+                    ["git", "cat-file", "--filters", f"{ref}:{path}"],
+                    "",
+                    result.stderr,
+                )
 
     def lfs_missing_oids(self, oids: list[str]) -> list[str]:
         """Return LFS object IDs that are not present in the local LFS store."""

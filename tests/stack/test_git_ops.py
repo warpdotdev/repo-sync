@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from repo_sync.stack.git_ops import GitOps
 
@@ -25,3 +26,22 @@ def test_lfs_tracked_paths_uses_source_ref(tmp_git_repo: GitOps) -> None:
     assert tmp_git_repo.lfs_tracked_paths(["asset.bin", "asset.dat"]) == {
         "asset.dat"
     }
+
+
+def test_lfs_fetch_paths_uses_cat_file_filters_for_exact_paths(
+    tmp_git_repo: GitOps,
+) -> None:
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = ""
+
+    with patch("repo_sync.stack.git_ops.subprocess.run", return_value=result) as run:
+        tmp_git_repo.lfs_fetch_paths("abc123", ["asset,with-comma.bin"])
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "git",
+        "cat-file",
+        "--filters",
+        "abc123:asset,with-comma.bin",
+    ]

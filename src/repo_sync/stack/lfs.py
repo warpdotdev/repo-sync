@@ -60,11 +60,16 @@ def parse_lfs_pointer(data: bytes, path: str) -> LfsPointer | None:
 def collect_lfs_pointers(
     root: str,
     paths: Iterable[str] | None = None,
+    fail_on_read_error: bool | None = None,
 ) -> list[LfsPointer]:
     """Collect LFS pointers under root, optionally restricted to relative paths."""
     candidates = _candidate_paths(root, paths)
     pointers: list[LfsPointer] = []
-    fail_on_read_error = paths is not None
+    fail_on_read_error = (
+        paths is not None
+        if fail_on_read_error is None
+        else fail_on_read_error
+    )
 
     for relpath, fullpath in candidates:
         try:
