@@ -87,7 +87,7 @@ jobs:
       - uses: warpdotdev/repo-sync/actions/validate-markers@main
 ```
 
-this validates that all `!repo-sync` markers are properly paired, not nested, and that no symlinks exist in the repo.
+this validates that all `!repo-sync` markers are properly paired, not nested, that no symlinks exist in the repo, and that text Git LFS payloads do not contain repo-sync markers.
 
 ### step 3: add the sync workflow (both repos)
 

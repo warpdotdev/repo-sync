@@ -27,12 +27,13 @@ from datetime import datetime, timezone
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
-from repo_sync.stack.lfs import collect_lfs_pointers
+from repo_sync.stack.lfs import LfsPointer, collect_lfs_pointers
 from repo_sync.stack.trailers import (
     SyncOrigin,
     append_trailer,
     format_conflict_trailer,
 )
+from repo_sync.strip.lfs import validate_lfs_payload_file
 from repo_sync.workflows.conflict import (
     add_conflict_label,
     assign_conflict_reviewer,
@@ -152,6 +153,7 @@ def _mirror_lfs_objects(
     changed_paths: list[str],
     attributes_git: GitOps,
     attributes_ref: str,
+    validate_payload_markers: bool = False,
 ) -> None:
     """Mirror LFS objects referenced by changed pointer files in a snapshot."""
     scan_paths = None if _lfs_attributes_changed(changed_paths) else changed_paths
@@ -198,6 +200,8 @@ def _mirror_lfs_objects(
             "Missing Git LFS object(s) after fetch: "
             + ", ".join(sorted(missing_oids))
         )
+    if validate_payload_markers:
+        _validate_lfs_payload_markers(source_git, source_ref, pointers)
 
     target_remote = f"repo_sync_lfs_target_{os.getpid()}"
     peer_url = peer_git.remote_url("origin")
@@ -214,6 +218,27 @@ def _lfs_attributes_changed(changed_paths: list[str]) -> bool:
         path == ".gitattributes" or path.endswith("/.gitattributes")
         for path in changed_paths
     )
+
+
+def _validate_lfs_payload_markers(
+    source_git: GitOps,
+    source_ref: str,
+    pointers: list[LfsPointer],
+) -> None:
+    """Reject text LFS payloads that rely on repo-sync stripping markers."""
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="repo-sync-lfs-payload-") as temp_dir:
+        for index, pointer in enumerate(pointers):
+            payload_path = os.path.join(temp_dir, f"payload-{index}")
+            source_git.lfs_write_path(source_ref, pointer.path, payload_path)
+            errors.extend(
+                validate_lfs_payload_file(payload_path, filepath=pointer.path)
+            )
+    if errors:
+        raise PermanentSyncError(
+            "Git LFS payloads cannot contain repo-sync private markers:\n"
+            + "\n".join(errors)
+        )
 
 
 # Docker image for the PR description agent.  Built locally by the sync
@@ -624,6 +649,7 @@ def _sync_private_to_public(
             changed_paths=changed_paths,
             attributes_git=GitOps(diff_repo),
             attributes_ref="HEAD",
+            validate_payload_markers=True,
         )
 
         # Build the PR description (identical for conflict and non-conflict).

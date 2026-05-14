@@ -1,7 +1,8 @@
 name: "Validate repo-sync markers"
 description: >
   Validates that all !repo-sync markers are properly paired and non-nested,
-  and that no symlinks target private/ directories or escape the repository root.
+  that no symlinks target private/ directories or escape the repository root,
+  and that text Git LFS payloads do not contain repo-sync markers.
 
 inputs:
   paths:
@@ -23,12 +24,16 @@ runs:
       shell: bash
       run: pip install "${{ github.action_path }}/../../"
 
+    - name: Configure Git LFS
+      shell: bash
+      run: git lfs install --local
+
     - name: Run marker validation
       shell: bash
       env:
         PATHS_INPUT: ${{ inputs.paths }}
       run: |
-        args=("--validate-only" "${{ github.workspace }}")
+        args=("--validate-only" "--validate-lfs-payloads" "${{ github.workspace }}")
         if [ -n "$PATHS_INPUT" ]; then
           for p in $PATHS_INPUT; do
             args+=("$p")

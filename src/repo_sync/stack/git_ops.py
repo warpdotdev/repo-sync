@@ -447,6 +447,26 @@ class GitOps:
                     result.stderr,
                 )
 
+    def lfs_write_path(self, ref: str, path: str, output_path: str) -> None:
+        """Write the LFS-smudged content for an exact path at a ref."""
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        command = ["git", "cat-file", "--filters", f"{ref}:{path}"]
+        with open(output_path, "wb") as output:
+            result = subprocess.run(
+                command,
+                cwd=self.repo_dir,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                command,
+                b"",
+                result.stderr,
+            )
+
     def lfs_missing_oids(self, oids: list[str]) -> list[str]:
         """Return LFS object IDs that are not present in the local LFS store."""
         if not oids:

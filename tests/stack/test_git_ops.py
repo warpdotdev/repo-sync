@@ -45,3 +45,28 @@ def test_lfs_fetch_paths_uses_cat_file_filters_for_exact_paths(
         "--filters",
         "abc123:asset,with-comma.bin",
     ]
+
+
+def test_lfs_write_path_uses_cat_file_filters_for_exact_path(
+    tmp_git_repo: GitOps,
+    tmp_path: Path,
+) -> None:
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = b""
+    output_path = tmp_path / "payload"
+
+    with patch("repo_sync.stack.git_ops.subprocess.run", return_value=result) as run:
+        tmp_git_repo.lfs_write_path(
+            "abc123",
+            "asset,with-comma.bin",
+            str(output_path),
+        )
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "git",
+        "cat-file",
+        "--filters",
+        "abc123:asset,with-comma.bin",
+    ]

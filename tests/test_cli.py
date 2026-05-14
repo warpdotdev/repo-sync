@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from repo_sync.strip.cli import main
+from repo_sync.strip.tree import StripResult
 
 
 def _write(root: Path, relpath: str, content: str) -> Path:
@@ -62,3 +64,13 @@ class TestCli:
         # Only validate good.rs.
         rc = main(["--validate-only", str(tmp_path), "good.rs"])
         assert rc == 0
+
+    def test_validate_only_with_lfs_payload_errors(self, tmp_path: Path) -> None:
+        """CLI --validate-only can include Git LFS payload marker validation."""
+        with patch(
+            "repo_sync.strip.cli.validate_lfs_payloads",
+            return_value=StripResult(["asset.txt: LFS marker error"], []),
+        ):
+            rc = main(["--validate-only", "--validate-lfs-payloads", str(tmp_path)])
+
+        assert rc == 1

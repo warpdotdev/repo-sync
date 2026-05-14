@@ -196,6 +196,49 @@ def test_mirror_lfs_objects_fails_when_fetched_object_is_missing(
     source_git.lfs_push_oids.assert_not_called()
 
 
+def test_mirror_lfs_objects_fails_before_push_for_lfs_payload_markers(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "asset.txt").write_text(_pointer(OID), encoding="utf-8")
+    source_git = MagicMock(spec=GitOps)
+    peer_git = MagicMock(spec=GitOps)
+    attributes_git = MagicMock(spec=GitOps)
+    attributes_git.lfs_tracked_paths.return_value = {"asset.txt"}
+    source_git.lfs_missing_oids.return_value = []
+
+    def write_payload(_ref: str, _path: str, output_path: str) -> None:
+        Path(output_path).write_text(
+            "public\n"
+            "# !repo-sync: private-start\n"
+            "secret\n"
+            "# !repo-sync: private-end\n",
+            encoding="utf-8",
+        )
+
+    source_git.lfs_write_path.side_effect = write_payload
+
+    with pytest.raises(PermanentSyncError, match="asset.txt"):
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref="abc123",
+            snapshot_dir=str(tmp_path),
+            changed_paths=["asset.txt"],
+            attributes_git=attributes_git,
+            attributes_ref="attrs-ref",
+            validate_payload_markers=True,
+        )
+
+    source_git.lfs_fetch_paths.assert_called_once_with(
+        "abc123",
+        ["asset.txt"],
+    )
+    source_git.lfs_write_path.assert_called_once()
+    peer_git.remote_url.assert_not_called()
+    source_git.remote_add_or_update.assert_not_called()
+    source_git.lfs_push_oids.assert_not_called()
+
+
 def test_mirror_lfs_objects_fetches_exact_comma_path(
     tmp_path: Path,
 ) -> None:
