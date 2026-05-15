@@ -193,7 +193,8 @@ def _mirror_lfs_objects(
         )
 
     fetch_paths = sorted({pointer.path for pointer in pointers})
-    source_git.lfs_fetch_paths(source_ref, fetch_paths)
+    expected_oids = {pointer.path: pointer.oid for pointer in pointers}
+    source_git.lfs_fetch_paths(source_ref, fetch_paths, expected_oids=expected_oids)
     missing_oids = source_git.lfs_missing_oids(oids)
     if missing_oids:
         raise PermanentSyncError(
@@ -230,7 +231,12 @@ def _validate_lfs_payload_markers(
     with tempfile.TemporaryDirectory(prefix="repo-sync-lfs-payload-") as temp_dir:
         for index, pointer in enumerate(pointers):
             payload_path = os.path.join(temp_dir, f"payload-{index}")
-            source_git.lfs_write_path(source_ref, pointer.path, payload_path)
+            source_git.lfs_write_path(
+                source_ref,
+                pointer.path,
+                payload_path,
+                expected_oid=pointer.oid,
+            )
             errors.extend(
                 validate_lfs_payload_file(payload_path, filepath=pointer.path)
             )

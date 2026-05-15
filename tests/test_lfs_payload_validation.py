@@ -77,3 +77,38 @@ def test_validate_lfs_payloads_materializes_lfs_paths(
 
     assert len(result.errors) == 1
     assert "asset.txt" in result.errors[0]
+
+
+def test_validate_lfs_payloads_fails_when_filters_return_pointer(
+    tmp_path: Path,
+) -> None:
+    oid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        if command[:4] == ["git", "lfs", "ls-files", "--json"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    '{"files":[{"name":"asset.bin",'
+                    f'"oid":"{oid}"'
+                    "}]}"
+                ),
+                stderr="",
+            )
+        if command[:3] == ["git", "cat-file", "--filters"]:
+            stdout = kwargs["stdout"]
+            stdout.write(
+                b"version https://git-lfs.github.com/spec/v1\n"
+                + f"oid sha256:{oid}\n".encode()
+                + b"size 1234\n"
+            )
+            return subprocess.CompletedProcess(command, 0, stderr=b"")
+        raise AssertionError(f"unexpected command: {command}")
+
+    with patch("repo_sync.strip.lfs.subprocess.run", side_effect=run):
+        result = validate_lfs_payloads(str(tmp_path))
+
+    assert len(result.errors) == 1
+    assert "asset.bin" in result.errors[0]
+    assert "git lfs install --local" in result.errors[0]

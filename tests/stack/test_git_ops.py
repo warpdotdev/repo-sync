@@ -5,6 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from repo_sync.errors import VerboseCalledProcessError
 from repo_sync.stack.git_ops import GitOps
 
 
@@ -46,6 +49,38 @@ def test_lfs_fetch_paths_uses_cat_file_filters_for_exact_paths(
         "abc123:asset,with-comma.bin",
     ]
     assert run.call_args.kwargs["env"]["GIT_ATTR_SOURCE"] == "abc123"
+
+
+def test_lfs_write_path_fails_when_filters_return_expected_pointer(
+    tmp_git_repo: GitOps,
+    tmp_path: Path,
+) -> None:
+    oid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    result = MagicMock()
+    result.returncode = 0
+    result.stderr = b""
+    output_path = tmp_path / "payload"
+
+    def run(_command: list[str], **kwargs: object) -> MagicMock:
+        stdout = kwargs["stdout"]
+        stdout.write(
+            b"version https://git-lfs.github.com/spec/v1\n"
+            + f"oid sha256:{oid}\n".encode()
+            + b"size 1234\n"
+        )
+        return result
+
+    with patch("repo_sync.stack.git_ops.subprocess.run", side_effect=run):
+        with pytest.raises(
+            VerboseCalledProcessError,
+            match="git lfs install --local",
+        ):
+            tmp_git_repo.lfs_write_path(
+                "abc123",
+                "asset.bin",
+                str(output_path),
+                expected_oid=oid,
+            )
 
 
 def test_lfs_write_path_uses_attributes_from_ref(tmp_git_repo: GitOps) -> None:

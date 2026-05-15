@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from repo_sync.errors import VerboseCalledProcessError
+from repo_sync.stack.lfs import parse_lfs_pointer
 
 
 @dataclass
@@ -427,31 +429,29 @@ class GitOps:
                 tracked_paths.add(path)
         return tracked_paths
 
-    def lfs_fetch_paths(self, ref: str, paths: list[str]) -> None:
+    def lfs_fetch_paths(
+        self,
+        ref: str,
+        paths: list[str],
+        expected_oids: dict[str, str] | None = None,
+    ) -> None:
         """Fetch LFS objects for exact paths at a ref."""
-        env = {
-            **os.environ,
-            **self._env_additions,
-            "GIT_ATTR_SOURCE": ref,
-        }
         for path in paths:
-            result = subprocess.run(
-                ["git", "cat-file", "--filters", f"{ref}:{path}"],
-                cwd=self.repo_dir,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-            if result.returncode != 0:
-                raise VerboseCalledProcessError(
-                    result.returncode,
-                    ["git", "cat-file", "--filters", f"{ref}:{path}"],
-                    "",
-                    result.stderr,
+            with tempfile.NamedTemporaryFile() as output:
+                self.lfs_write_path(
+                    ref,
+                    path,
+                    output.name,
+                    expected_oid=(expected_oids or {}).get(path),
                 )
 
-    def lfs_write_path(self, ref: str, path: str, output_path: str) -> None:
+    def lfs_write_path(
+        self,
+        ref: str,
+        path: str,
+        output_path: str,
+        expected_oid: str | None = None,
+    ) -> None:
         """Write the LFS-smudged content for an exact path at a ref."""
         env = {
             **os.environ,
@@ -473,6 +473,20 @@ class GitOps:
                 command,
                 b"",
                 result.stderr,
+            )
+        pointer = parse_lfs_pointer(Path(output_path).read_bytes(), path)
+        if pointer is not None and (
+            expected_oid is None or pointer.oid == expected_oid
+        ):
+            raise VerboseCalledProcessError(
+                1,
+                command,
+                b"",
+                (
+                    "git cat-file --filters returned an LFS pointer instead "
+                    "of payload bytes. Ensure Git LFS filters are configured "
+                    "with `git lfs install --local`."
+                ),
             )
 
     def lfs_missing_oids(self, oids: list[str]) -> list[str]:

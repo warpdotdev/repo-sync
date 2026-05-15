@@ -59,6 +59,7 @@ def test_mirror_lfs_objects_pushes_changed_pointer_oids(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["asset.bin"],
+        expected_oids={"asset.bin": OID},
     )
     source_git.lfs_missing_oids.assert_called_once_with([OID])
     peer_git.remote_url.assert_called_once_with("origin")
@@ -132,6 +133,7 @@ def test_mirror_lfs_objects_does_not_push_private_stripped_pointer(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["asset.bin"],
+        expected_oids={"asset.bin": OID},
     )
     source_git.lfs_push_oids.assert_called_once_with(remote, [OID])
     assert PRIVATE_OID not in source_git.lfs_push_oids.call_args.args[1]
@@ -192,6 +194,7 @@ def test_mirror_lfs_objects_fails_when_fetched_object_is_missing(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["asset.bin"],
+        expected_oids={"asset.bin": OID},
     )
     source_git.lfs_push_oids.assert_not_called()
 
@@ -206,7 +209,12 @@ def test_mirror_lfs_objects_fails_before_push_for_lfs_payload_markers(
     attributes_git.lfs_tracked_paths.return_value = {"asset.txt"}
     source_git.lfs_missing_oids.return_value = []
 
-    def write_payload(_ref: str, _path: str, output_path: str) -> None:
+    def write_payload(
+        _ref: str,
+        _path: str,
+        output_path: str,
+        expected_oid: str | None = None,
+    ) -> None:
         Path(output_path).write_text(
             "public\n"
             "# !repo-sync: private-start\n"
@@ -232,6 +240,7 @@ def test_mirror_lfs_objects_fails_before_push_for_lfs_payload_markers(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["asset.txt"],
+        expected_oids={"asset.txt": OID},
     )
     source_git.lfs_write_path.assert_called_once()
     peer_git.remote_url.assert_not_called()
@@ -267,6 +276,7 @@ def test_mirror_lfs_objects_fetches_exact_comma_path(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["asset,with-comma.bin"],
+        expected_oids={"asset,with-comma.bin": OID},
     )
 
 
@@ -304,4 +314,5 @@ def test_mirror_lfs_objects_scans_all_pointers_when_attributes_change(
     source_git.lfs_fetch_paths.assert_called_once_with(
         "abc123",
         ["existing.bin"],
+        expected_oids={"existing.bin": OID},
     )

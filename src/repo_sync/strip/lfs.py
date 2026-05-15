@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
 
+from repo_sync.stack.lfs import parse_lfs_pointer
 from repo_sync.strip.detect import is_binary
 from repo_sync.strip.markers import (
     MarkerError,
@@ -66,7 +67,7 @@ def validate_lfs_payloads(
     errors: list[str] = []
     warnings: list[str] = []
     try:
-        lfs_paths = _git_lfs_paths(root, ref)
+        lfs_oids_by_path = _git_lfs_paths(root, ref)
     except subprocess.CalledProcessError as exc:
         stderr = (
             exc.stderr
@@ -78,7 +79,7 @@ def validate_lfs_payloads(
             warnings,
         )
 
-    selected_paths = _select_lfs_paths(root, lfs_paths, paths)
+    selected_paths = _select_lfs_paths(root, sorted(lfs_oids_by_path), paths)
     if not selected_paths:
         return StripResult(errors, warnings)
 
@@ -86,7 +87,13 @@ def validate_lfs_payloads(
         for index, relpath in enumerate(selected_paths):
             payload_path = os.path.join(temp_dir, f"payload-{index}")
             try:
-                _write_lfs_payload(root, ref, relpath, payload_path)
+                _write_lfs_payload(
+                    root,
+                    ref,
+                    relpath,
+                    payload_path,
+                    expected_oid=lfs_oids_by_path.get(relpath),
+                )
             except subprocess.CalledProcessError as exc:
                 stderr = (
                     exc.stderr
@@ -105,8 +112,8 @@ def validate_lfs_payloads(
     return StripResult(errors, warnings)
 
 
-def _git_lfs_paths(root: str, ref: str) -> list[str]:
-    """Return Git LFS paths present at a ref."""
+def _git_lfs_paths(root: str, ref: str) -> dict[str, str | None]:
+    """Return Git LFS paths and object IDs present at a ref."""
     result = subprocess.run(
         ["git", "lfs", "ls-files", "--json", ref],
         cwd=root,
@@ -116,12 +123,13 @@ def _git_lfs_paths(root: str, ref: str) -> list[str]:
     )
     data = json.loads(result.stdout or "{}")
     files = data.get("files") or []
-    paths: list[str] = []
+    paths: dict[str, str | None] = {}
     for entry in files:
         path = entry.get("name") or entry.get("path")
+        oid = entry.get("oid")
         if path:
-            paths.append(path)
-    return sorted(paths)
+            paths[path] = oid if isinstance(oid, str) else None
+    return paths
 
 
 def _select_lfs_paths(
@@ -152,7 +160,13 @@ def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
     return any(pure_path.match(pattern) for pattern in patterns)
 
 
-def _write_lfs_payload(root: str, ref: str, relpath: str, output_path: str) -> None:
+def _write_lfs_payload(
+    root: str,
+    ref: str,
+    relpath: str,
+    output_path: str,
+    expected_oid: str | None = None,
+) -> None:
     """Write the LFS-smudged payload for a path to a temporary file."""
     command = ["git", "cat-file", "--filters", f"{ref}:{relpath}"]
     env = {**os.environ, "GIT_ATTR_SOURCE": ref}
@@ -164,4 +178,17 @@ def _write_lfs_payload(root: str, ref: str, relpath: str, output_path: str) -> N
             stderr=subprocess.PIPE,
             env=env,
             check=True,
+        )
+    pointer = parse_lfs_pointer(Path(output_path).read_bytes(), relpath)
+    if pointer is not None and (
+        expected_oid is None or pointer.oid == expected_oid
+    ):
+        raise subprocess.CalledProcessError(
+            1,
+            command,
+            stderr=(
+                "git cat-file --filters returned an LFS pointer instead "
+                "of payload bytes. Ensure Git LFS filters are configured "
+                "with `git lfs install --local`."
+            ),
         )
