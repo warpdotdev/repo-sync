@@ -61,6 +61,7 @@ def test_validate_lfs_payloads_materializes_lfs_paths(
                 stderr="",
             )
         if command[:3] == ["git", "cat-file", "--filters"]:
+            assert kwargs["env"]["GIT_ATTR_SOURCE"] == "HEAD"
             stdout = kwargs["stdout"]
             stdout.write(
                 b"public\n"

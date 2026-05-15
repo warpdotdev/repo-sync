@@ -429,7 +429,11 @@ class GitOps:
 
     def lfs_fetch_paths(self, ref: str, paths: list[str]) -> None:
         """Fetch LFS objects for exact paths at a ref."""
-        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        env = {
+            **os.environ,
+            **self._env_additions,
+            "GIT_ATTR_SOURCE": ref,
+        }
         for path in paths:
             result = subprocess.run(
                 ["git", "cat-file", "--filters", f"{ref}:{path}"],
@@ -449,7 +453,11 @@ class GitOps:
 
     def lfs_write_path(self, ref: str, path: str, output_path: str) -> None:
         """Write the LFS-smudged content for an exact path at a ref."""
-        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        env = {
+            **os.environ,
+            **self._env_additions,
+            "GIT_ATTR_SOURCE": ref,
+        }
         command = ["git", "cat-file", "--filters", f"{ref}:{path}"]
         with open(output_path, "wb") as output:
             result = subprocess.run(

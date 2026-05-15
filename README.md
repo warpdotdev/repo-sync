@@ -89,6 +89,14 @@ jobs:
 
 this validates that all `!repo-sync` markers are properly paired, not nested, that no symlinks exist in the repo, and that text Git LFS payloads do not contain repo-sync markers.
 
+to validate only selected paths, pass `paths` as a JSON array so file names containing spaces or shell metacharacters are preserved exactly:
+
+```yaml
+- uses: warpdotdev/repo-sync/actions/validate-markers@main
+  with:
+    paths: '["src/file with spaces.txt", "assets/*.bin"]'
+```
+
 ### step 3: add the sync workflow (both repos)
 
 add the sync workflow to both repos.  see [examples/consuming-repo-sync.yml](examples/consuming-repo-sync.yml) for a complete example.  the key pieces are:

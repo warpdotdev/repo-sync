@@ -7,7 +7,7 @@ description: >
 inputs:
   paths:
     description: >
-      Space-separated list of relative file paths or globs to validate.
+      JSON array of relative file paths or globs to validate.
       Defaults to all files in the repository.
     required: false
     default: ""
@@ -35,8 +35,6 @@ runs:
       run: |
         args=("--validate-only" "--validate-lfs-payloads" "${{ github.workspace }}")
         if [ -n "$PATHS_INPUT" ]; then
-          for p in $PATHS_INPUT; do
-            args+=("$p")
-          done
+          args+=("--paths-json" "$PATHS_INPUT")
         fi
         repo-sync-strip "${args[@]}"

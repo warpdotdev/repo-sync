@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from repo_sync.strip.lfs import validate_lfs_payloads
@@ -37,6 +38,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--paths-json",
+        default="",
+        help=(
+            "JSON array of relative file paths to validate "
+            "(only meaningful with --validate-only)."
+        ),
+    )
+    parser.add_argument(
         "--validate-only",
         action="store_true",
         default=False,
@@ -51,7 +60,26 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    paths = args.paths if args.paths else None
+    if args.paths_json:
+        try:
+            paths_json = json.loads(args.paths_json)
+        except json.JSONDecodeError as exc:
+            print(f"--paths-json must be a JSON array: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(paths_json, list) or not all(
+            isinstance(path, str) for path in paths_json
+        ):
+            print("--paths-json must be a JSON array of strings", file=sys.stderr)
+            return 1
+        if args.paths:
+            print(
+                "--paths-json cannot be combined with positional paths",
+                file=sys.stderr,
+            )
+            return 1
+        paths = paths_json if paths_json else None
+    else:
+        paths = args.paths if args.paths else None
 
     if args.validate_only:
         result = strip_tree(args.directory, validate_only=True, paths=paths)

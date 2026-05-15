@@ -155,11 +155,13 @@ def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
 def _write_lfs_payload(root: str, ref: str, relpath: str, output_path: str) -> None:
     """Write the LFS-smudged payload for a path to a temporary file."""
     command = ["git", "cat-file", "--filters", f"{ref}:{relpath}"]
+    env = {**os.environ, "GIT_ATTR_SOURCE": ref}
     with open(output_path, "wb") as output:
         subprocess.run(
             command,
             cwd=root,
             stdout=output,
             stderr=subprocess.PIPE,
+            env=env,
             check=True,
         )

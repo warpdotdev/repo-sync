@@ -45,6 +45,26 @@ def test_lfs_fetch_paths_uses_cat_file_filters_for_exact_paths(
         "--filters",
         "abc123:asset,with-comma.bin",
     ]
+    assert run.call_args.kwargs["env"]["GIT_ATTR_SOURCE"] == "abc123"
+
+
+def test_lfs_write_path_uses_attributes_from_ref(tmp_git_repo: GitOps) -> None:
+    repo_dir = Path(tmp_git_repo.repo_dir)
+    tmp_git_repo._run(["lfs", "install", "--local"])
+    tmp_git_repo._run(["lfs", "track", "*.txt"])
+    (repo_dir / "asset.txt").write_text("payload\n", encoding="utf-8")
+    tmp_git_repo._run(["add", ".gitattributes", "asset.txt"])
+    tmp_git_repo._run(["commit", "-m", "add lfs asset"])
+    lfs_ref = tmp_git_repo.rev_parse("HEAD")
+
+    (repo_dir / ".gitattributes").unlink()
+    tmp_git_repo._run(["add", ".gitattributes"])
+    tmp_git_repo._run(["commit", "-m", "stop tracking txt files"])
+
+    output_path = repo_dir / "payload.out"
+    tmp_git_repo.lfs_write_path(lfs_ref, "asset.txt", str(output_path))
+
+    assert output_path.read_text(encoding="utf-8") == "payload\n"
 
 
 def test_lfs_write_path_uses_cat_file_filters_for_exact_path(
@@ -70,3 +90,4 @@ def test_lfs_write_path_uses_cat_file_filters_for_exact_path(
         "--filters",
         "abc123:asset,with-comma.bin",
     ]
+    assert run.call_args.kwargs["env"]["GIT_ATTR_SOURCE"] == "abc123"

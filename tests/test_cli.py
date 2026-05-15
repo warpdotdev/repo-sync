@@ -74,3 +74,29 @@ class TestCli:
             rc = main(["--validate-only", "--validate-lfs-payloads", str(tmp_path)])
 
         assert rc == 1
+
+    def test_validate_only_with_paths_json_preserves_spaces(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """CLI --paths-json preserves exact file paths with whitespace."""
+        _write(tmp_path, "a b.txt", "hello\n")
+        with patch(
+            "repo_sync.strip.cli.validate_lfs_payloads",
+            return_value=StripResult([], []),
+        ) as validate_lfs_payloads:
+            rc = main(
+                [
+                    "--validate-only",
+                    "--validate-lfs-payloads",
+                    str(tmp_path),
+                    "--paths-json",
+                    '["a b.txt"]',
+                ]
+            )
+
+        assert rc == 0
+        validate_lfs_payloads.assert_called_once_with(
+            str(tmp_path),
+            paths=["a b.txt"],
+        )
