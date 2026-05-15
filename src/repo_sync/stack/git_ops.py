@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from repo_sync.errors import VerboseCalledProcessError
+from repo_sync.stack.lfs import parse_lfs_pointer_file
 
 
 @dataclass
@@ -50,7 +53,6 @@ class GitOps:
             stdout=result.stdout.strip(),
             stderr=result.stderr.strip(),
         )
-
 
     def rev_parse(self, ref: str) -> str:
         """Resolve a ref to a full SHA."""
@@ -322,6 +324,14 @@ class GitOps:
         else:
             self._run(["remote", "add", name, url])
 
+    def remote_remove(self, name: str) -> None:
+        """Remove a remote if it exists."""
+        self._run(["remote", "remove", name], check=False)
+
+    def remote_url(self, name: str) -> str:
+        """Return the configured URL for a remote."""
+        return self._run(["remote", "get-url", name]).stdout
+
     def log_shas(self, ref: str = "HEAD") -> list[str]:
         """Return all commit SHAs reachable from ref (newest first)."""
         result = self._run(["log", "--format=%H", ref])
@@ -352,3 +362,171 @@ class GitOps:
                 result.stderr,
             )
         return result.stdout.decode("utf-8", errors="replace").strip()
+
+    def diff_name_only(self, ref_a: str, ref_b: str) -> list[str]:
+        """Return changed paths between two refs."""
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "-z", ref_a, ref_b],
+            cwd=self.repo_dir,
+            capture_output=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                ["git", "diff", "--name-only", "-z", ref_a, ref_b],
+                result.stdout,
+                result.stderr,
+            )
+        if not result.stdout:
+            return []
+        return [
+            path
+            for path in result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+            if path
+        ]
+
+    def lfs_tracked_paths(
+        self,
+        paths: list[str],
+        source_ref: str | None = None,
+    ) -> set[str]:
+        """Return paths that are configured with the Git LFS filter."""
+        if not paths:
+            return set()
+
+        args = ["check-attr", "-z"]
+        if source_ref is not None:
+            args.extend(["--source", source_ref])
+        args.extend(["--stdin", "filter"])
+
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        input_text = "".join(f"{path}\0" for path in paths)
+        result = subprocess.run(
+            ["git", *args],
+            cwd=self.repo_dir,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                ["git", *args],
+                result.stdout,
+                result.stderr,
+            )
+
+        tracked_paths: set[str] = set()
+        fields = [field for field in result.stdout.split("\0") if field]
+        for index in range(0, len(fields), 3):
+            if index + 2 >= len(fields):
+                break
+            path, attr, value = fields[index:index + 3]
+            if attr == "filter" and value == "lfs":
+                tracked_paths.add(path)
+        return tracked_paths
+
+    def lfs_fetch_paths(
+        self,
+        ref: str,
+        paths: list[str],
+        expected_oids: dict[str, str] | None = None,
+    ) -> None:
+        """Fetch LFS objects for exact paths at a ref."""
+        for path in paths:
+            with tempfile.NamedTemporaryFile() as output:
+                self.lfs_write_path(
+                    ref,
+                    path,
+                    output.name,
+                    expected_oid=(expected_oids or {}).get(path),
+                )
+
+    def lfs_write_path(
+        self,
+        ref: str,
+        path: str,
+        output_path: str,
+        expected_oid: str | None = None,
+    ) -> None:
+        """Write the LFS-smudged content for an exact path at a ref."""
+        env = {
+            **os.environ,
+            **self._env_additions,
+            "GIT_ATTR_SOURCE": ref,
+        }
+        command = ["git", "cat-file", "--filters", f"{ref}:{path}"]
+        with open(output_path, "wb") as output:
+            result = subprocess.run(
+                command,
+                cwd=self.repo_dir,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                command,
+                b"",
+                result.stderr,
+            )
+        pointer = parse_lfs_pointer_file(output_path, path)
+        if pointer is not None and (
+            expected_oid is None or pointer.oid == expected_oid
+        ):
+            raise VerboseCalledProcessError(
+                1,
+                command,
+                b"",
+                (
+                    "git cat-file --filters returned an LFS pointer instead "
+                    "of payload bytes. Ensure Git LFS filters are configured "
+                    "with `git lfs install --local`."
+                ),
+            )
+
+    def lfs_missing_oids(self, oids: list[str]) -> list[str]:
+        """Return LFS object IDs that are not present in the local LFS store."""
+        if not oids:
+            return []
+
+        git_common_dir = self._run(["rev-parse", "--git-common-dir"]).stdout
+        git_common_path = Path(git_common_dir)
+        if not git_common_path.is_absolute():
+            git_common_path = Path(self.repo_dir) / git_common_path
+
+        missing: list[str] = []
+        for oid in oids:
+            object_path = (
+                git_common_path / "lfs" / "objects" / oid[:2] / oid[2:4] / oid
+            )
+            if not object_path.is_file():
+                missing.append(oid)
+        return missing
+
+    def lfs_push_oids(self, remote: str, oids: list[str]) -> None:
+        """Push specific LFS object IDs to a remote."""
+        if not oids:
+            return
+
+        env = {**os.environ, **self._env_additions} if self._env_additions else None
+        input_text = "".join(f"{oid}\n" for oid in oids)
+        result = subprocess.run(
+            ["git", "lfs", "push", "--object-id", remote, "--stdin"],
+            cwd=self.repo_dir,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise VerboseCalledProcessError(
+                result.returncode,
+                ["git", "lfs", "push", "--object-id", remote, "--stdin"],
+                result.stdout,
+                result.stderr,
+            )

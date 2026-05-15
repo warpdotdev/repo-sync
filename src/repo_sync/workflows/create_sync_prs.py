@@ -27,11 +27,13 @@ from datetime import datetime, timezone
 
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
+from repo_sync.stack.lfs import LfsPointer, collect_lfs_pointers
 from repo_sync.stack.trailers import (
     SyncOrigin,
     append_trailer,
     format_conflict_trailer,
 )
+from repo_sync.strip.lfs import validate_lfs_payload_file
 from repo_sync.workflows.conflict import (
     add_conflict_label,
     assign_conflict_reviewer,
@@ -141,6 +143,108 @@ def _run_fixup_script(script_path: str, working_dir: str) -> bool:
     except Exception:
         logger.error("Fixup script %s raised an exception.", script_path, exc_info=True)
         return False
+
+
+def _mirror_lfs_objects(
+    source_git: GitOps,
+    peer_git: GitOps,
+    source_ref: str,
+    snapshot_dir: str,
+    changed_paths: list[str],
+    attributes_git: GitOps,
+    attributes_ref: str,
+    validate_payload_markers: bool = False,
+) -> None:
+    """Mirror LFS objects referenced by changed pointer files in a snapshot."""
+    scan_paths = None if _lfs_attributes_changed(changed_paths) else changed_paths
+    pointers = collect_lfs_pointers(
+        snapshot_dir,
+        scan_paths,
+        fail_on_read_error=True,
+    )
+    if not pointers:
+        return
+    lfs_tracked_paths = attributes_git.lfs_tracked_paths(
+        sorted({pointer.path for pointer in pointers}),
+        source_ref=attributes_ref,
+    )
+    pointers = [
+        pointer
+        for pointer in pointers
+        if pointer.path in lfs_tracked_paths
+    ]
+    if not pointers:
+        return
+
+    paths_by_oid: dict[str, list[str]] = {}
+    for pointer in pointers:
+        paths_by_oid.setdefault(pointer.oid, []).append(pointer.path)
+
+    oids = sorted(paths_by_oid)
+    logger.info(
+        "Mirroring %d Git LFS object(s) referenced by %d changed pointer file(s).",
+        len(oids), len(pointers),
+    )
+    for oid in oids:
+        logger.info(
+            "Mirroring Git LFS object %s for path(s): %s.",
+            oid,
+            ", ".join(sorted(paths_by_oid[oid])),
+        )
+
+    fetch_paths = sorted({pointer.path for pointer in pointers})
+    expected_oids = {pointer.path: pointer.oid for pointer in pointers}
+    source_git.lfs_fetch_paths(source_ref, fetch_paths, expected_oids=expected_oids)
+    missing_oids = source_git.lfs_missing_oids(oids)
+    if missing_oids:
+        raise PermanentSyncError(
+            "Missing Git LFS object(s) after fetch: "
+            + ", ".join(sorted(missing_oids))
+        )
+    if validate_payload_markers:
+        _validate_lfs_payload_markers(source_git, source_ref, pointers)
+
+    target_remote = f"repo_sync_lfs_target_{os.getpid()}"
+    peer_url = peer_git.remote_url("origin")
+    source_git.remote_add_or_update(target_remote, peer_url)
+    try:
+        source_git.lfs_push_oids(target_remote, oids)
+    finally:
+        source_git.remote_remove(target_remote)
+
+
+def _lfs_attributes_changed(changed_paths: list[str]) -> bool:
+    """Return True when changed paths may affect LFS tracking rules."""
+    return any(
+        path == ".gitattributes" or path.endswith("/.gitattributes")
+        for path in changed_paths
+    )
+
+
+def _validate_lfs_payload_markers(
+    source_git: GitOps,
+    source_ref: str,
+    pointers: list[LfsPointer],
+) -> None:
+    """Reject text LFS payloads that rely on repo-sync stripping markers."""
+    errors: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="repo-sync-lfs-payload-") as temp_dir:
+        for index, pointer in enumerate(pointers):
+            payload_path = os.path.join(temp_dir, f"payload-{index}")
+            source_git.lfs_write_path(
+                source_ref,
+                pointer.path,
+                payload_path,
+                expected_oid=pointer.oid,
+            )
+            errors.extend(
+                validate_lfs_payload_file(payload_path, filepath=pointer.path)
+            )
+    if errors:
+        raise PermanentSyncError(
+            "Git LFS payloads cannot contain repo-sync private markers:\n"
+            + "\n".join(errors)
+        )
 
 
 # Docker image for the PR description agent.  Built locally by the sync
@@ -473,6 +577,7 @@ def _sync_private_to_public(
         return False  # Empty diff — all changes were internal-only.
 
     snapshot_dir, prev_snapshot_dir, diff_repo, patch_file, diff_commit = diff_result
+    changed_paths = GitOps(diff_repo).diff_name_only("HEAD~1", "HEAD")
 
     try:
         # Apply the delta to the peer repo by cherry-picking from the temp repo.
@@ -542,6 +647,16 @@ def _sync_private_to_public(
             )
         else:
             peer_git.commit_amend_message("repo-sync: sync from private", origin_trailer)
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref=source_sha,
+            snapshot_dir=snapshot_dir,
+            changed_paths=changed_paths,
+            attributes_git=GitOps(diff_repo),
+            attributes_ref="HEAD",
+            validate_payload_markers=True,
+        )
 
         # Build the PR description (identical for conflict and non-conflict).
         if pr_desc_cache.source_sha == source_sha:
@@ -626,6 +741,7 @@ def _sync_public_to_private(
     Returns True if a PR was created.
     Raises TransientSyncError on base-branch-deleted failures.
     """
+    changed_paths = source_git.diff_name_only(f"{source_sha}^", source_sha)
     # Add the source repo as a remote.  Use the absolute path because
     # peer_git runs with cwd=peer_repo_dir, so a relative path would
     # resolve to the wrong location.
@@ -685,6 +801,20 @@ def _sync_public_to_private(
         peer_git.commit_amend_message(
             current_msg, origin_trailer, allow_empty=True
         )
+    lfs_snapshot_dir = tempfile.mkdtemp(prefix=f"repo-sync-lfs-{short_sha}-")
+    try:
+        source_git.archive_to_dir(source_sha, lfs_snapshot_dir)
+        _mirror_lfs_objects(
+            source_git=source_git,
+            peer_git=peer_git,
+            source_ref=source_sha,
+            snapshot_dir=lfs_snapshot_dir,
+            changed_paths=changed_paths,
+            attributes_git=source_git,
+            attributes_ref=source_sha,
+        )
+    finally:
+        shutil.rmtree(lfs_snapshot_dir, ignore_errors=True)
 
     # Build the PR description (identical for conflict and non-conflict).
     source_gh = GhOps(source_repo, token=os.environ.get("GH_TOKEN"))
