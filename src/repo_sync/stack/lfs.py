@@ -57,6 +57,13 @@ def parse_lfs_pointer(data: bytes, path: str) -> LfsPointer | None:
     return LfsPointer(path=path, oid=oid, size=size)
 
 
+def parse_lfs_pointer_file(file_path: str | os.PathLike[str], path: str) -> LfsPointer | None:
+    """Parse a Git LFS pointer file without reading large payloads into memory."""
+    with open(file_path, "rb") as file:
+        data = file.read(_MAX_POINTER_BYTES + 1)
+    return parse_lfs_pointer(data, path)
+
+
 def collect_lfs_pointers(
     root: str,
     paths: Iterable[str] | None = None,

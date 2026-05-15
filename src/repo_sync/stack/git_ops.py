@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from repo_sync.errors import VerboseCalledProcessError
-from repo_sync.stack.lfs import parse_lfs_pointer
+from repo_sync.stack.lfs import parse_lfs_pointer_file
 
 
 @dataclass
@@ -474,7 +474,7 @@ class GitOps:
                 b"",
                 result.stderr,
             )
-        pointer = parse_lfs_pointer(Path(output_path).read_bytes(), path)
+        pointer = parse_lfs_pointer_file(output_path, path)
         if pointer is not None and (
             expected_oid is None or pointer.oid == expected_oid
         ):

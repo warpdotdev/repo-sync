@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import mock_open, patch
 
 import pytest
 
-from repo_sync.stack.lfs import LfsPointer, collect_lfs_pointers, parse_lfs_pointer
+from repo_sync.stack.lfs import (
+    _MAX_POINTER_BYTES,
+    LfsPointer,
+    collect_lfs_pointers,
+    parse_lfs_pointer,
+    parse_lfs_pointer_file,
+)
 
 
 OID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -25,6 +32,17 @@ def test_parse_lfs_pointer() -> None:
     pointer = parse_lfs_pointer(_pointer(), "asset.bin")
 
     assert pointer == LfsPointer(path="asset.bin", oid=OID, size=1234)
+
+
+def test_parse_lfs_pointer_file_reads_only_pointer_sized_prefix() -> None:
+    data = _pointer() + b"x" * (_MAX_POINTER_BYTES * 2)
+    file_open = mock_open(read_data=data)
+
+    with patch("builtins.open", file_open):
+        assert parse_lfs_pointer_file("payload.bin", "asset.bin") is None
+
+    handle = file_open()
+    handle.read.assert_called_once_with(_MAX_POINTER_BYTES + 1)
 
 
 def test_parse_lfs_pointer_rejects_ordinary_file() -> None:

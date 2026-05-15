@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
 
-from repo_sync.stack.lfs import parse_lfs_pointer
+from repo_sync.stack.lfs import parse_lfs_pointer_file
 from repo_sync.strip.detect import is_binary
 from repo_sync.strip.markers import (
     MarkerError,
@@ -179,7 +179,7 @@ def _write_lfs_payload(
             env=env,
             check=True,
         )
-    pointer = parse_lfs_pointer(Path(output_path).read_bytes(), relpath)
+    pointer = parse_lfs_pointer_file(output_path, relpath)
     if pointer is not None and (
         expected_oid is None or pointer.oid == expected_oid
     ):
