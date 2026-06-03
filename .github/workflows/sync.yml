@@ -132,6 +132,10 @@ jobs:
 
       - name: Build conflict resolution agent image
         run: docker build -f .repo-sync/docker/conflict-resolution/Dockerfile -t repo-sync-conflict-resolution .repo-sync
+      - name: Configure Git LFS
+        run: |
+          git lfs install --local
+          git -C peer lfs install --local
 
       - name: Check if SSH key is provided
         id: check-ssh-key
