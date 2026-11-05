@@ -29,12 +29,22 @@
 #       --cwd /mnt/repo \
 #       --output-format json
 
+FROM debian:bookworm-slim AS warp-signing-key
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends gnupg \
+    && rm -rf /var/lib/apt/lists/*
+ADD https://releases.warp.dev/linux/keys/warp.asc /tmp/warp.asc
+RUN gpg --batch --dearmor --output /tmp/warpdotdev.gpg /tmp/warp.asc \
+    && chmod 0644 /tmp/warpdotdev.gpg
+
 FROM warpdotdev/warp-agent:latest
 
 # Install git.  The base image intentionally omits it (for isolation in
 # the PR description agent), but the conflict-resolution agent needs it
 # to stage files, finalize rebases/cherry-picks, and commit resolutions.
 USER root
+COPY --from=warp-signing-key /tmp/warpdotdev.gpg /etc/apt/trusted.gpg.d/warpdotdev.gpg
 RUN apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1 && rm -rf /var/lib/apt/lists/*
 USER warp-agent
 
