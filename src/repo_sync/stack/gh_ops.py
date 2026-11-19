@@ -394,6 +394,48 @@ class GhOps:
         except subprocess.CalledProcessError:
             return False
 
+    def list_closed_prs_for_base(self, base_branch: str) -> list[dict]:
+        """List closed PRs targeting an exact base, including merged PRs."""
+        prs = []
+        page = 1
+        while True:
+            batch = json.loads(self._run([
+                "api", f"repos/{self.repo}/pulls", "-X", "GET",
+                "-f", "state=closed", "-f", f"base={base_branch}",
+                "-f", "per_page=100", "-f", f"page={page}",
+            ]))
+            prs.extend(batch)
+            if len(batch) < 100:
+                return prs
+            page += 1
+
+    def was_closed_by_base_deletion(self, pr_number: int) -> bool:
+        """Require the latest closure to immediately follow base deletion."""
+        events = []
+        page = 1
+        while True:
+            batch = json.loads(self._run([
+                "api", f"repos/{self.repo}/issues/{pr_number}/events",
+                "-X", "GET", "-f", "per_page=100", "-f", f"page={page}",
+            ]))
+            events.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+
+        for index in range(len(events) - 1, -1, -1):
+            if events[index]["event"] == "closed":
+                if index == 0:
+                    return False
+                deletion = events[index - 1]
+                actor_id = (events[index].get("actor") or {}).get("id")
+                return (
+                    deletion["event"] == "base_ref_deleted"
+                    and actor_id is not None
+                    and actor_id == (deletion.get("actor") or {}).get("id")
+                )
+        return False
+
     def get_tag_sha(self, tag_name: str) -> str | None:
         """Get the commit SHA that a tag points to, or None if the tag doesn't exist."""
         try:

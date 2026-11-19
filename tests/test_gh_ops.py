@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch, call
 
+import pytest
+
 from repo_sync.stack.gh_ops import GhOps, PullRequest
 
 
@@ -103,3 +105,60 @@ class TestListOpenSyncPrs:
 
         result = gh.list_open_sync_prs()
         assert result[0].body == ""
+
+
+def test_closed_base_search_paginates() -> None:
+    gh = GhOps("org/repo")
+    gh._run = MagicMock(side_effect=[
+        json.dumps([{"number": number} for number in range(100)]),
+        json.dumps([{"number": 100}]),
+    ])
+
+    assert len(gh.list_closed_prs_for_base("repo-sync/parent")) == 101
+    for page, api_call in enumerate(gh._run.call_args_list, 1):
+        args = api_call.args[0]
+        assert "state=closed" in args
+        assert "base=repo-sync/parent" in args
+        assert f"page={page}" in args
+
+
+def test_base_deletion_closure_across_event_pages() -> None:
+    gh = GhOps("org/repo")
+    gh._run = MagicMock(side_effect=[
+        json.dumps(
+            [{"event": "labeled"}] * 99
+            + [{"event": "base_ref_deleted", "actor": {"id": 42}}]
+        ),
+        json.dumps([
+            {"event": "closed", "actor": {"id": 42}},
+            {"event": "labeled"},
+        ]),
+    ])
+
+    assert gh.was_closed_by_base_deletion(2)
+    assert "page=2" in gh._run.call_args.args[0]
+
+
+@pytest.mark.parametrize("events", [
+    [],
+    [{"event": "closed"}],
+    [
+        {"event": "base_ref_deleted", "actor": None},
+        {"event": "closed", "actor": None},
+    ],
+    [
+        {"event": "base_ref_deleted", "actor": {"id": 42}},
+        {"event": "closed", "actor": {"id": 99}},
+    ],
+    [
+        {"event": "base_ref_deleted", "actor": {"id": 42}},
+        {"event": "closed", "actor": {"id": 42}},
+        {"event": "reopened", "actor": {"id": 99}},
+        {"event": "closed", "actor": {"id": 99}},
+    ],
+])
+def test_closure_requires_positive_base_deletion_evidence(events) -> None:
+    gh = GhOps("org/repo")
+    gh._run = MagicMock(return_value=json.dumps(events))
+
+    assert not gh.was_closed_by_base_deletion(2)
