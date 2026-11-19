@@ -20,6 +20,8 @@ from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.trailers import (
     append_trailer,
     format_conflict_trailer,
+    parse_assigned,
+    parse_conflict,
     parse_origin,
 )
 from repo_sync.workflows.conflict import (
@@ -308,6 +310,72 @@ def rebase_pr(
     return True
 
 
+def recover_closed_children(
+    git: GitOps,
+    gh: GhOps,
+    merged_branch: str,
+    direction: str,
+    default_branch: str,
+    escalate_to: str,
+) -> None:
+    """Replace sync children that GitHub closed when their base was deleted."""
+    prefix = f"repo-sync/{direction}/"
+    for pr in gh.list_closed_prs_for_base(merged_branch):
+        head = pr["head"]
+        branch = head["ref"]
+        if (
+            pr["merged_at"] is not None
+            or pr["base"]["ref"] != merged_branch
+            or not branch.startswith(prefix)
+            or (head.get("repo") or {}).get("full_name") != gh.repo
+            or not gh.was_closed_by_base_deletion(pr["number"])
+            or gh.pr_exists(branch, any_state=True) is not None
+        ):
+            continue
+
+        git.fetch("origin")
+        remote_ref = f"origin/{branch}"
+        if not git.branch_exists(remote_ref):
+            continue
+        if git.rev_parse(remote_ref) != head["sha"]:
+            logger.warning(
+                "Closed PR #%d has a changed head; not recovering.", pr["number"],
+            )
+            continue
+        git.checkout_force_branch(branch, remote_ref)
+        old_base = find_sync_commit_old_base(git)
+        if old_base is None:
+            raise RestackError(f"No sync commit found for closed PR #{pr['number']}.")
+
+        result = git.rebase_onto(f"origin/{default_branch}", old_base, branch)
+        body = pr.get("body") or ""
+        if result.success:
+            git.push("origin", branch, force_with_lease=True)
+        else:
+            git.rebase_abort()
+            # The opened event must never auto-approve a conflict resolution.
+            body = append_trailer(body, format_conflict_trailer("rebase"))
+
+        replacement = gh.create_pr(
+            head=branch, base=default_branch, title=pr["title"], body=body,
+        )
+        logger.info(
+            "Replaced base-deletion-closed PR #%d with #%d.",
+            pr["number"], replacement.number,
+        )
+        if not result.success:
+            rebase_pr(git, gh, replacement.number, branch, default_branch, escalate_to)
+        elif parse_conflict(body) or parse_assigned(body):
+            add_conflict_label(gh, replacement.number)
+            origin = parse_origin(body)
+            assign_conflict_reviewer(
+                gh, replacement.number,
+                source_repo=origin.repo if origin else None,
+                source_sha=origin.sha if origin else None,
+                escalate_to=escalate_to,
+            )
+
+
 def run_restack(
     git: GitOps,
     gh: GhOps,
@@ -333,6 +401,11 @@ def run_restack(
     # Step 1: Update watermark (post-merge only).
     if mode == "normal" and merge_sha:
         update_watermark(gh, watermark_repo, direction, merge_sha)
+
+    if mode == "normal" and merged_head_branch:
+        recover_closed_children(
+            git, gh, merged_head_branch, direction, default_branch, escalate_to,
+        )
 
     # Step 2: Find the next PR to restack.
     if mode == "stuck_recovery":
