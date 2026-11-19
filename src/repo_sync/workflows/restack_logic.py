@@ -349,6 +349,8 @@ def recover_closed_children(
 
         result = git.rebase_onto(f"origin/{default_branch}", old_base, branch)
         body = pr.get("body") or ""
+        if any(label["name"] == "repo-sync:conflict" for label in pr.get("labels", [])):
+            body = append_trailer(body, format_conflict_trailer("rebase"))
         if result.success:
             git.push("origin", branch, force_with_lease=True)
         else:

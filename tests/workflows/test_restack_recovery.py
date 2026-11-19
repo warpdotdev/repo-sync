@@ -139,9 +139,13 @@ def test_conflict_replacement_requires_human_approval_before_restack(closed_chil
     )
 
 
-def test_existing_conflict_still_has_a_reviewer_on_replacement(closed_child) -> None:
+@pytest.mark.parametrize("signal", ["trailer", "label"])
+def test_existing_conflict_still_has_a_reviewer_on_replacement(closed_child, signal) -> None:
     git, remote, gh, pr, events = closed_child
-    pr["body"] += "Repo-Sync-Conflict: cherry-pick\n"
+    if signal == "trailer":
+        pr["body"] += "Repo-Sync-Conflict: cherry-pick\n"
+    else:
+        pr["labels"] = [{"name": "repo-sync:conflict"}]
 
     with (
         patch("repo_sync.workflows.restack_logic.add_conflict_label") as label,
