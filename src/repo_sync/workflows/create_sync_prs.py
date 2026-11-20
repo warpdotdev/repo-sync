@@ -25,6 +25,7 @@ import time
 
 from datetime import datetime, timezone
 
+from repo_sync.stack.constants import SYNC_BRANCH_PREFIX
 from repo_sync.stack.gh_ops import GhOps
 from repo_sync.stack.git_ops import GitOps
 from repo_sync.stack.lfs import LfsPointer, collect_lfs_pointers
@@ -489,8 +490,14 @@ def _create_pr(
 ) -> str:
     """Create a PR and return its URL.
 
-    Raises TransientSyncError if the base branch was deleted.
+    Raises TransientSyncError if the sync parent merged or the base was deleted.
     """
+    if stack_base_branch.startswith(SYNC_BRANCH_PREFIX):
+        parent = peer_gh.pr_exists(stack_base_branch, any_state=True)
+        if parent is not None and parent.state == "MERGED":
+            raise TransientSyncError(
+                f"Base PR for {stack_base_branch} has merged."
+            )
     try:
         return peer_gh.create_pr_simple(
             head=sync_branch,
@@ -966,6 +973,7 @@ def create_sync_prs(
         time.sleep(5)
         # Fetch latest state in the peer repo before retrying.
         peer_git.fetch("origin")
+        stack_top = find_existing_stack_top(peer_gh, direction)
 
 
 def run_sync(
